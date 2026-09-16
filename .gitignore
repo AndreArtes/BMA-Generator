@@ -1,0 +1,19 @@
+# bm3 source data and bma output (large 3D assets, not source code)
+fichier bm3/
+fichier bm3_*/
+fichier bma/
+fichier bma_*/
+
+# Generated .bma configuration files, wherever they end up
+*.bma
+*.BMA
+
+# Python
+__pycache__/
+*.pyc
+
+# graphify analysis output (regenerate with /graphify)
+graphify-out/
+
+# PyInstaller build intermediates (the packaged .exe under dist/ is committed)
+build/

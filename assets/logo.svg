@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256">
+  <!-- Dossier bm3 (source) -->
+  <rect x="2" y="24" width="15" height="7" rx="2" fill="#1E63C8"/>
+  <rect x="2" y="29" width="28" height="19" rx="2.5" fill="#1E63C8"/>
+
+  <!-- Fleche de generation -->
+  <path d="M34 38 h8 M39 33 l5 5 -5 5" stroke="#333333" stroke-width="3.2"
+        fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Document bma (genere) -->
+  <path d="M40 8 H55 L62 15 V57 a2 2 0 0 1 -2 2 H40 a2 2 0 0 1 -2 -2 V10 a2 2 0 0 1 2 -2 Z" fill="#0F8C3B"/>
+  <path d="M55 8 V15 H62 Z" fill="#0B6E2E"/>
+  <rect x="43" y="26" width="16" height="3" rx="1.5" fill="#ffffff"/>
+  <rect x="43" y="34" width="16" height="3" rx="1.5" fill="#ffffff"/>
+  <rect x="43" y="42" width="10" height="3" rx="1.5" fill="#ffffff"/>
+</svg>

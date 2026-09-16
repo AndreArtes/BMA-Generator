@@ -1,0 +1,2 @@
+repo git : https://github.com/AndreArtes/BMA-Generator.git
+documentation homebyme : https://3dcloud-doc.enterprise.by.me/docs/3dcloud/introduction
