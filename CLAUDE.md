@@ -14,6 +14,16 @@ python main.py generate --bm3-dir "fichier bm3" --roles roles.xlsx --out-dir "fi
 
 There is no test suite, linter, or build step in this repo; `python main.py`/`python gui.py` running without exceptions on the sample data in `fichier bm3/` is the manual smoke test.
 
+## Versioning & releases
+
+The current version lives in `VERSION` (semver, e.g. `1.0.0`) — bump it (patch for fixes, minor for features, major for breaking changes) whenever a meaningful batch of changes is pushed, in the same commit as that work. The packaged `.exe` is **not** committed to the repo (see `.gitignore`); it is published as a GitHub Release asset per version instead, so the repo history doesn't grow with every rebuild:
+
+```
+python -m PyInstaller --onefile --windowed --name "BMA Generator" --icon assets/app.ico --add-data "assets;assets" gui.py
+git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# then create a GitHub Release for that tag and upload dist/BMA Generator.exe as its asset
+```
+
 ## What this tool does
 
 Converts a "bm3" export (an Excel catalog + one folder of `.BM3` 3D model files per product) into a "bma" export: one `<ProductID>_ass` folder per product, each containing three identical `.BMA` JSON files (`HQ-root.BMA`, `MQ-root.BMA`, `LQ-root.BMA` — quality tiers never affect content) plus a thumbnail, and a companion `export-products-bma.xlsx` catalog. The `.BMA` files are consumed by a third-party 3D configurator (see `utills.txt` for the doc link); this repo has no way to render or validate them itself beyond re-deriving known-good examples by hand.
