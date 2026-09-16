@@ -15,5 +15,7 @@ __pycache__/
 # graphify analysis output (regenerate with /graphify)
 graphify-out/
 
-# PyInstaller build intermediates (the packaged .exe under dist/ is committed)
+# PyInstaller build output - published as GitHub Releases, not tracked here
 build/
+dist/
+*.spec
