@@ -173,9 +173,10 @@ def _normalize_role_info(value):
 
 
 def find_reference_depth(product, role, roles_by_id, products_by_id):
-    """Deduit la profondeur des modules qui vont se connecter a ce produit
-    (role chaise longue), en cherchant parmi les autres produits du lot ceux
-    dont le role expose un tag que ce produit peut recevoir."""
+    """Deduit la profondeur du/des module(s) voisin(s) auquel ce produit va
+    se connecter (n'importe quel role dans tpl.LATERAL_ALIGN_ROLES, pas
+    seulement chaise longue), en cherchant parmi les autres produits du lot
+    ceux dont le role expose un tag que ce produit peut recevoir."""
 
     wanted_tags = tpl.receive_tags(role)
     depths = []
@@ -183,9 +184,10 @@ def find_reference_depth(product, role, roles_by_id, products_by_id):
         if other_id == product.product_id or not other_role or other_role not in tpl.ALL_ROLES:
             continue
         if other_role in tpl.CHAISE_LONGUE_ROLES:
-            # Une autre chaise longue n'est pas un module "standard" : on ne
-            # veut que la profondeur des modules normaux auxquels elle se
-            # connecte, jamais celle d'une chaise longue voisine.
+            # Une chaise longue voisine n'est pas un module "standard" : on
+            # ne veut que la profondeur des modules normaux auxquels elle se
+            # connecte, jamais celle d'une chaise longue voisine (qui aurait
+            # elle-meme une profondeur non standard).
             continue
         if tpl.exposed_tags(other_role) & wanted_tags:
             other_product = products_by_id.get(other_id)
@@ -199,8 +201,8 @@ def find_reference_depth(product, role, roles_by_id, products_by_id):
     warnings = []
     if len(rounded) > 1:
         warnings.append(
-            f"{product.product_id} (chaise longue): inconsistent depths among compatible "
-            f"modules ({sorted(rounded)}), using {depths[0]}."
+            f"{product.product_id}: inconsistent depths among compatible neighbouring "
+            f"modules ({sorted(rounded)}), using {depths[0]} to align backs."
         )
     return depths[0], warnings
 
@@ -248,17 +250,26 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
         extra_output_rows = []
         assembly_id = f"{product.product_id}{ASSEMBLY_SUFFIX}"
 
-        if role in tpl.CHAISE_LONGUE_ROLES:
+        if role in tpl.LATERAL_ALIGN_ROLES:
             ref_depth = ref_depth_overrides.get(product.product_id)
             if ref_depth is None:
                 ref_depth, dep_warnings = find_reference_depth(product, role, roles_by_id, products_by_id)
                 warnings.extend(dep_warnings)
             if ref_depth is None:
-                warnings.append(
-                    f"{product.product_id} (chaise longue): no compatible module found in the batch "
-                    "to deduce the reference depth; set it manually in the roles file. "
-                    "Value used by default: the product's own depth (no offset)."
-                )
+                # Pas de voisin compatible dans ce lot : repli sur la propre
+                # profondeur du produit (decalage nul, identique a l'ancien
+                # comportement y=0). Pour la famille chaise longue -
+                # presque toujours concernee par un vrai ecart de profondeur
+                # - ca vaut la peine de le signaler ; pour les autres roles
+                # (souvent generes sans tous leurs voisins presents dans le
+                # lot), ce repli est le cas normal et ne merite pas un
+                # avertissement a chaque fois.
+                if role in tpl.CHAISE_LONGUE_ROLES:
+                    warnings.append(
+                        f"{product.product_id} (chaise longue): no compatible module found in the batch "
+                        "to deduce the reference depth; set it manually in the roles file. "
+                        "Value used by default: the product's own depth (no offset)."
+                    )
                 ref_depth = product.depth
             extra_parameters = [
                 {

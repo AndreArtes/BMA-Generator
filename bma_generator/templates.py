@@ -47,10 +47,21 @@ ALL_ROLES = [
     CHAISE_LONGUE_RIGHT,
 ]
 
-# Tout role dont l'ancre a besoin de la profondeur des modules voisins pour
-# aligner les dos (voir generator.find_reference_depth) : le "chaise longue"
-# generique (2 ancres symetriques) et ses variantes gauche/droite (1 ancre).
+# Familles "chaise longue" : profondeur typiquement non standard (plus
+# grande que les modules ordinaires). Utilise dans generator.py pour NE PAS
+# prendre leur profondeur comme reference pour aligner un AUTRE produit -
+# sinon une chaise longue pourrait se caler sur le dos d'une autre chaise
+# longue voisine au lieu d'un module standard.
 CHAISE_LONGUE_ROLES = {CHAISE_LONGUE, CHAISE_LONGUE_LEFT, CHAISE_LONGUE_RIGHT}
+
+# Tout role dont au moins une ancre laterale (gauche/droite, pas les ancres
+# "avant"/frontales) doit aligner son dos sur celui du module voisin plutot
+# que de rester centree (y=0) : c'est necessaire des que deux modules
+# connectes n'ont pas la meme profondeur (cas le plus visible avec une
+# chaise longue, mais ca vaut pour n'importe quelle paire de profondeurs
+# differentes). Seuls les roles purement frontaux (POUF_FRONTAL,
+# TABLE_FRONTAL) n'ont pas d'ancre laterale et restent en dehors.
+LATERAL_ALIGN_ROLES = {r for r in ALL_ROLES if r not in (POUF_FRONTAL, TABLE_FRONTAL)}
 
 # Nom du parametre numerique injecte dans les .BMA "chaise longue" pour
 # stocker la profondeur des modules standards auxquels elle se connecte
@@ -143,6 +154,32 @@ def _rel_half_depth(name, expr_true):
     }
 
 
+def _lateral_align_relation():
+    """Relation Y partagee par toutes les ancres laterales (voir
+    LATERAL_ALIGN_ROLES) : decale l'ancre sur l'axe negatif de
+    -(profondeur du module voisin * 0.5 - propre profondeur * 0.5) au lieu
+    de la laisser au centre (y=0), pour que les DOS des deux modules
+    connectes s'alignent meme si leurs profondeurs different. Quand les
+    deux profondeurs sont egales, l'expression vaut 0 : comportement
+    strictement identique a l'ancien y=0 fixe dans ce cas."""
+    return {
+        "symbolDependencies": ["monModule", REFERENCE_DEPTH_PARAM_NAME],
+        "componentDependencies": [
+            {
+                "propertyName": "depth",
+                "componentName": "MonModule",
+                "component": "MonModule",
+            }
+        ],
+        "type": "number",
+        "name": "yPositionAncreLaterale",
+        "expression": (
+            "(monModule!== null) && (MonModule!== null) ? "
+            f"-({REFERENCE_DEPTH_PARAM_NAME}*0.5 - MonModule.depth*0.5):0"
+        ),
+    }
+
+
 def _anchor(tags, receive_tags, position, direction_y=None, direction_z=None, activated=True):
     anchor = {
         "tags": tags,
@@ -179,17 +216,18 @@ def build_role_definition(role):
                 "yPositionAncreAvant",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.depth/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["CentralL"],
                 ["GaucheTable", "CentralR", "AngleGaucheR", "PoufLatR", "TableBasseR", "-DroitTable"],
-                {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+                {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["CentralR"],
                 ["DroitTable", "CentralL", "AngleDroitL", "PoufLatL", "TableBasseL", "-GaucheTable"],
-                {"x": "xPositionAncreDroite", "y": 0, "z": 0},
+                {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["CentralF"],
@@ -209,12 +247,13 @@ def build_role_definition(role):
                 "xPositionAncreDroite",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["GaucheTable"],
                 ["CentralL", "AngleDroitL", "AngleGaucheF"],
-                {"x": "xPositionAncreDroite", "y": 0, "z": 0},
+                {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
         return relations, anchors
@@ -227,12 +266,13 @@ def build_role_definition(role):
                 "xPositionAncreGauche",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["DroitTable"],
                 ["CentralR", "AngleGaucheR", "AngleDroitF"],
-                {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+                {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
         return relations, anchors
@@ -247,12 +287,13 @@ def build_role_definition(role):
                 "yPositionAncreAvant",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.depth/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["AngleGaucheR"],
                 ["CentralL", "AngleDroitL", "DroitTable", "PoufLatL", "TableBasseL"],
-                {"x": "xPositionAncreDroit", "y": 0, "z": 0},
+                {"x": "xPositionAncreDroit", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["AngleGaucheF"],
@@ -273,12 +314,13 @@ def build_role_definition(role):
                 "yPositionAncreAvant",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.depth/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["AngleDroitL"],
                 ["CentralR", "AngleGaucheR", "GaucheTable", "PoufLatR", "TableBasseR"],
-                {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+                {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["AngleDroitF"],
@@ -299,17 +341,18 @@ def build_role_definition(role):
                 "xPositionAncreDroit",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["PoufLatL"],
                 ["CentralR", "AngleGaucheR", "AngleDroitF"],
-                {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+                {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["PoufLatR"],
                 ["CentralL", "AngleDroitL", "AngleGaucheF"],
-                {"x": "xPositionAncreDroit", "y": 0, "z": 0},
+                {"x": "xPositionAncreDroit", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
         return relations, anchors
@@ -345,17 +388,18 @@ def build_role_definition(role):
                 "xPositionAncreDroit",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
                 ["TableBasseL"],
                 ["CentralR", "AngleGaucheR"],
-                {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+                {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["TableBasseR"],
                 ["CentralL", "AngleDroitL"],
-                {"x": "xPositionAncreDroit", "y": 0, "z": 0},
+                {"x": "xPositionAncreDroit", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
         return relations, anchors
@@ -378,12 +422,11 @@ def build_role_definition(role):
         return relations, anchors
 
     if role == CHAISE_LONGUE:
-        # Comme "central" (2 ancres laterales symetriques gauche/droite),
-        # mais la chaise longue est plus profonde que les modules standards
-        # auxquels elle se connecte : pour aligner les dos (pas les
-        # devants), l'ancre est decalee en Y sur l'axe negatif de
-        # -(profondeur du module attache * 0.5 - propre profondeur * 0.5) au
-        # lieu d'etre au centre (y=0).
+        # Comme "central" (2 ancres laterales symetriques gauche/droite).
+        # L'alignement des dos (voir _lateral_align_relation) est ce qui
+        # rend ce role necessaire en premier lieu : la chaise longue est
+        # typiquement plus profonde que les modules standards auxquels elle
+        # se connecte.
         relations = [
             _rel_half_width(
                 "xPositionAncreGauche",
@@ -393,22 +436,7 @@ def build_role_definition(role):
                 "xPositionAncreDroite",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
-            {
-                "symbolDependencies": ["monModule", REFERENCE_DEPTH_PARAM_NAME],
-                "componentDependencies": [
-                    {
-                        "propertyName": "depth",
-                        "componentName": "MonModule",
-                        "component": "MonModule",
-                    }
-                ],
-                "type": "number",
-                "name": "yPositionAncreLaterale",
-                "expression": (
-                    "(monModule!== null) && (MonModule!== null) ? "
-                    f"-({REFERENCE_DEPTH_PARAM_NAME}*0.5 - MonModule.depth*0.5):0"
-                ),
-            },
+            _lateral_align_relation(),
         ]
         anchors = [
             _anchor(
@@ -426,33 +454,14 @@ def build_role_definition(role):
 
     if role in (CHAISE_LONGUE_LEFT, CHAISE_LONGUE_RIGHT):
         # Comme LATERAL_LEFT/LATERAL_RIGHT (une seule ancre, du cote OPPOSE
-        # au nom) mais avec en plus le decalage en Y de CHAISE_LONGUE pour
-        # aligner le dos de ce module (plus profond) sur celui des modules
-        # standards qui s'y connectent, au lieu de centrer sur y=0.
-        y_relation = {
-            "symbolDependencies": ["monModule", REFERENCE_DEPTH_PARAM_NAME],
-            "componentDependencies": [
-                {
-                    "propertyName": "depth",
-                    "componentName": "MonModule",
-                    "component": "MonModule",
-                }
-            ],
-            "type": "number",
-            "name": "yPositionAncreLaterale",
-            "expression": (
-                "(monModule!== null) && (MonModule!== null) ? "
-                f"-({REFERENCE_DEPTH_PARAM_NAME}*0.5 - MonModule.depth*0.5):0"
-            ),
-        }
-
+        # au nom), avec le meme alignement des dos que CHAISE_LONGUE.
         if role == CHAISE_LONGUE_LEFT:
             relations = [
                 _rel_half_width(
                     "xPositionAncreDroite",
                     "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
                 ),
-                y_relation,
+                _lateral_align_relation(),
             ]
             anchors = [
                 _anchor(
@@ -467,7 +476,7 @@ def build_role_definition(role):
                     "xPositionAncreGauche",
                     "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
                 ),
-                y_relation,
+                _lateral_align_relation(),
             ]
             anchors = [
                 _anchor(
