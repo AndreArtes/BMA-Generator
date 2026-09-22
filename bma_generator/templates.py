@@ -76,9 +76,9 @@ REFERENCE_DEPTH_PARAM_NAME = "profondeurModuleAttache"
 # (voir infer_role_from_reference), donc "droit" couvre aussi "droite".
 _RIGHT_KEYWORDS = ("right", "droit")
 _LEFT_KEYWORDS = ("left", "gauche")
-_CORNER_KEYWORDS = ("corner",)
+_CORNER_KEYWORDS = ("corner", "angle", "coin")
 _CHAISE_LONGUE_KEYWORDS = ("chaiselong",)  # couvre chaiselong/chaiselongue/"chaise long(ue)" une fois nettoye
-_CENTRAL_KEYWORDS = ("central",)
+_CENTRAL_KEYWORDS = ("central", "centre")
 
 
 def _clean_reference(reference):
