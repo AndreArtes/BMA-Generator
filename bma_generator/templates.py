@@ -17,6 +17,8 @@ Ajouter une nouvelle famille de meubles (nouveau vocabulaire de tags) demande
 d'ajouter un nouveau role ici.
 """
 
+import re
+
 CENTRAL = "central"
 LATERAL_LEFT = "lateral_left"
 LATERAL_RIGHT = "lateral_right"
@@ -27,6 +29,8 @@ POUF_FRONTAL = "pouf_frontal"
 TABLE_LATERAL = "table_lateral"
 TABLE_FRONTAL = "table_frontal"
 CHAISE_LONGUE = "chaise_longue"
+CHAISE_LONGUE_LEFT = "chaise_longue_left"
+CHAISE_LONGUE_RIGHT = "chaise_longue_right"
 
 ALL_ROLES = [
     CENTRAL,
@@ -39,7 +43,14 @@ ALL_ROLES = [
     TABLE_LATERAL,
     TABLE_FRONTAL,
     CHAISE_LONGUE,
+    CHAISE_LONGUE_LEFT,
+    CHAISE_LONGUE_RIGHT,
 ]
+
+# Tout role dont l'ancre a besoin de la profondeur des modules voisins pour
+# aligner les dos (voir generator.find_reference_depth) : le "chaise longue"
+# generique (2 ancres symetriques) et ses variantes gauche/droite (1 ancre).
+CHAISE_LONGUE_ROLES = {CHAISE_LONGUE, CHAISE_LONGUE_LEFT, CHAISE_LONGUE_RIGHT}
 
 # Nom du parametre numerique injecte dans les .BMA "chaise longue" pour
 # stocker la profondeur des modules standards auxquels elle se connecte
@@ -47,19 +58,57 @@ ALL_ROLES = [
 # ou surchargee manuellement dans le fichier de roles).
 REFERENCE_DEPTH_PARAM_NAME = "profondeurModuleAttache"
 
-# Role qui peut etre deduit sans ambiguite du prefixe de la colonne
-# "Reference" du fichier bm3 (avant le premier "-").
-REFERENCE_PREFIX_TO_ROLE = {
-    "central": CENTRAL,
-    "left": LATERAL_LEFT,
-    "right": LATERAL_RIGHT,
-    "corner left": CORNER_LEFT,
-    "corner right": CORNER_RIGHT,
-    "chaiselong": CHAISE_LONGUE,
-    "chaise long": CHAISE_LONGUE,
-    "chaise longue": CHAISE_LONGUE,
-    # "pouf" et "table" sont ambigus (2 variantes possibles) -> pas de mapping ici.
-}
+# Mots-cles reconnus n'importe ou dans la colonne "Reference" du bm3 (pas
+# seulement en prefixe exact) pour deduire automatiquement le role : ex.
+# "right_module1", "chaiseLongueDroite-12345", "Corner-Left-98" matchent
+# tous. Le matching se fait sur la reference nettoyee de toute ponctuation
+# (voir infer_role_from_reference), donc "droit" couvre aussi "droite".
+_RIGHT_KEYWORDS = ("right", "droit")
+_LEFT_KEYWORDS = ("left", "gauche")
+_CORNER_KEYWORDS = ("corner",)
+_CHAISE_LONGUE_KEYWORDS = ("chaiselong",)  # couvre chaiselong/chaiselongue/"chaise long(ue)" une fois nettoye
+_CENTRAL_KEYWORDS = ("central",)
+
+
+def _clean_reference(reference):
+    """Reference en minuscules, sans aucune ponctuation/chiffre/espace, pour
+    un matching de mots-cles insensible au separateur ('-', '_', ' ', ...)."""
+    return re.sub(r"[^a-zàâäéèêëïîôöùûüç]", "", (reference or "").lower())
+
+
+def infer_role_from_reference(reference):
+    """Deduit le role depuis n'importe quel mot-cle present dans la colonne
+    Reference du bm3 (pas juste un prefixe exact avant le premier '-').
+    Retourne None si aucun mot-cle reconnu ou si le role reste ambigu
+    (ex: "pouf"/"table" seuls, qui ont plusieurs variantes possibles)."""
+
+    clean = _clean_reference(reference)
+    if not clean:
+        return None
+
+    has_right = any(k in clean for k in _RIGHT_KEYWORDS)
+    has_left = any(k in clean for k in _LEFT_KEYWORDS)
+    has_corner = any(k in clean for k in _CORNER_KEYWORDS)
+    has_chaise_longue = any(k in clean for k in _CHAISE_LONGUE_KEYWORDS)
+    has_central = any(k in clean for k in _CENTRAL_KEYWORDS)
+
+    if has_corner and has_right:
+        return CORNER_RIGHT
+    if has_corner and has_left:
+        return CORNER_LEFT
+    if has_chaise_longue and has_right:
+        return CHAISE_LONGUE_RIGHT
+    if has_chaise_longue and has_left:
+        return CHAISE_LONGUE_LEFT
+    if has_chaise_longue:
+        return CHAISE_LONGUE
+    if has_central:
+        return CENTRAL
+    if has_right:
+        return LATERAL_RIGHT
+    if has_left:
+        return LATERAL_LEFT
+    return None
 
 
 def _rel_half_width(name, expr_true):
@@ -151,14 +200,14 @@ def build_role_definition(role):
         return relations, anchors
 
     if role == LATERAL_LEFT:
+        # Piece d'extremite "gauche" (ex: reference contenant "left"/"gauche") :
+        # une seule ancre, du cote OPPOSE au nom (le cote gauche est
+        # l'accoudoir/extremite fermee, rien ne s'y connecte). L'ancre se
+        # trouve donc a droite.
         relations = [
             _rel_half_width(
                 "xPositionAncreDroite",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
-            ),
-            _rel_half_width(
-                "xPositionAncreGauche",
-                "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
             ),
         ]
         anchors = [
@@ -167,24 +216,16 @@ def build_role_definition(role):
                 ["CentralL", "AngleDroitL", "AngleGaucheF"],
                 {"x": "xPositionAncreDroite", "y": 0, "z": 0},
             ),
-            _anchor(
-                ["-GaucheTable"],
-                ["CentralR"],
-                {"x": "xPositionAncreGauche", "y": 0, "z": 0},
-                activated=None,
-            ),
         ]
         return relations, anchors
 
     if role == LATERAL_RIGHT:
+        # Symetrique de LATERAL_LEFT : une seule ancre, a gauche (opposee au
+        # nom "right"/"droit").
         relations = [
             _rel_half_width(
                 "xPositionAncreGauche",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
-            ),
-            _rel_half_width(
-                "xPositionAncreDroit",
-                "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
         ]
         anchors = [
@@ -192,12 +233,6 @@ def build_role_definition(role):
                 ["DroitTable"],
                 ["CentralR", "AngleGaucheR", "AngleDroitF"],
                 {"x": "xPositionAncreGauche", "y": 0, "z": 0},
-            ),
-            _anchor(
-                ["-DroitTable"],
-                ["CentralL"],
-                {"x": "xPositionAncreDroit", "y": 0, "z": 0},
-                activated=None,
             ),
         ]
         return relations, anchors
@@ -387,6 +422,60 @@ def build_role_definition(role):
                 {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
+        return relations, anchors
+
+    if role in (CHAISE_LONGUE_LEFT, CHAISE_LONGUE_RIGHT):
+        # Comme LATERAL_LEFT/LATERAL_RIGHT (une seule ancre, du cote OPPOSE
+        # au nom) mais avec en plus le decalage en Y de CHAISE_LONGUE pour
+        # aligner le dos de ce module (plus profond) sur celui des modules
+        # standards qui s'y connectent, au lieu de centrer sur y=0.
+        y_relation = {
+            "symbolDependencies": ["monModule", REFERENCE_DEPTH_PARAM_NAME],
+            "componentDependencies": [
+                {
+                    "propertyName": "depth",
+                    "componentName": "MonModule",
+                    "component": "MonModule",
+                }
+            ],
+            "type": "number",
+            "name": "yPositionAncreLaterale",
+            "expression": (
+                "(monModule!== null) && (MonModule!== null) ? "
+                f"-({REFERENCE_DEPTH_PARAM_NAME}*0.5 - MonModule.depth*0.5):0"
+            ),
+        }
+
+        if role == CHAISE_LONGUE_LEFT:
+            relations = [
+                _rel_half_width(
+                    "xPositionAncreDroite",
+                    "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
+                ),
+                y_relation,
+            ]
+            anchors = [
+                _anchor(
+                    ["GaucheTable"],
+                    ["CentralL", "AngleDroitL", "AngleGaucheF"],
+                    {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
+                ),
+            ]
+        else:
+            relations = [
+                _rel_half_width(
+                    "xPositionAncreGauche",
+                    "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
+                ),
+                y_relation,
+            ]
+            anchors = [
+                _anchor(
+                    ["DroitTable"],
+                    ["CentralR", "AngleGaucheR", "AngleDroitF"],
+                    {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
+                ),
+            ]
         return relations, anchors
 
     raise ValueError(f"Role inconnu: {role!r}. Roles valides: {ALL_ROLES}")

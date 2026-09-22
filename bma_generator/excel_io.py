@@ -74,14 +74,8 @@ class Bm3Product:
         self.source_header = source_header or []
 
     @property
-    def reference_prefix(self):
-        if not self.reference or "-" not in self.reference:
-            return ""
-        return self.reference.split("-", 1)[0].strip().lower()
-
-    @property
     def inferred_role(self):
-        return tpl.REFERENCE_PREFIX_TO_ROLE.get(self.reference_prefix)
+        return tpl.infer_role_from_reference(self.reference)
 
     def apply_prefix(self, prefix):
         """Renomme product_id en <prefix><id d'origine> (ou restaure l'id

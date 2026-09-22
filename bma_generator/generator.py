@@ -182,7 +182,7 @@ def find_reference_depth(product, role, roles_by_id, products_by_id):
     for other_id, other_role in roles_by_id.items():
         if other_id == product.product_id or not other_role or other_role not in tpl.ALL_ROLES:
             continue
-        if other_role == tpl.CHAISE_LONGUE:
+        if other_role in tpl.CHAISE_LONGUE_ROLES:
             # Une autre chaise longue n'est pas un module "standard" : on ne
             # veut que la profondeur des modules normaux auxquels elle se
             # connecte, jamais celle d'une chaise longue voisine.
@@ -248,7 +248,7 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
         extra_output_rows = []
         assembly_id = f"{product.product_id}{ASSEMBLY_SUFFIX}"
 
-        if role == tpl.CHAISE_LONGUE:
+        if role in tpl.CHAISE_LONGUE_ROLES:
             ref_depth = ref_depth_overrides.get(product.product_id)
             if ref_depth is None:
                 ref_depth, dep_warnings = find_reference_depth(product, role, roles_by_id, products_by_id)
