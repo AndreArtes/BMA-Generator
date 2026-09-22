@@ -52,13 +52,20 @@ def new_uuid():
 
 def _output_row(assembly_id, param_id, ptype, translation_key, editable, default, values,
                  allow_any_value, value_translation_key, magnitude, tags, free_tags, step,
-                 index_ui, in_or_out, visibility, force):
+                 index_ui, in_or_out, visibility, force, dynamic=True):
     """Construit une ligne de la feuille Parameters de sortie. Pour les
-    parametres de type 'Product' (references a un autre produit/materiau),
-    Default/Values sont mis a null et Allow any value a 'true' : ces valeurs
-    sont resolues dynamiquement par le configurateur, pas figees ici."""
+    parametres de type 'Product' issus du bm3 source (references a un autre
+    produit/materiau, ex: structureColor/sofaColor), Default/Values sont mis
+    a null et Allow any value a 'true' : ce sont des choix que le client fait
+    dans le configurateur, resolus dynamiquement, jamais figes ici.
 
-    if ptype == PRODUCT_PARAM_TYPE:
+    `dynamic=False` desactive cette regle : les lignes administratives
+    'module' et 'package' sont aussi de type 'Product' mais leur Default/
+    Values doivent rester l'ID reel (produit bm3 / package) de CET
+    assemblage precis - une reference fixe a l'export, pas un choix
+    client."""
+
+    if ptype == PRODUCT_PARAM_TYPE and dynamic:
         # Litteralement le mot "null" (pas une cellule vide) : ces valeurs
         # sont resolues dynamiquement par le configurateur, pas figees ici.
         default, values, allow_any_value = "null", "null", "true"
@@ -326,7 +333,7 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
             _output_row(
                 assembly_id, "module", PRODUCT_PARAM_TYPE, "module", "None",
                 product.product_id, product.product_id, "false", "", "", "", "",
-                None, None, "in", False, None,
+                None, None, "in", False, None, dynamic=False,
             )
         )
         # Meme filtre que build_bma_json : seuls les parametres de type
@@ -350,7 +357,7 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
             _output_row(
                 assembly_id, "package", PRODUCT_PARAM_TYPE, "package", "None",
                 package_id, package_id, "false", "", "", "", "",
-                None, None, "in", None, None,
+                None, None, "in", None, None, dynamic=False,
             )
         )
 
