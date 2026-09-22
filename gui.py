@@ -727,7 +727,17 @@ def _start_main_app():
 
 if __name__ == "__main__":
     app = wx.App()
-    SplashScreen(on_done=_start_main_app).Show()
+    try:
+        # The splash screen renders assets/*.svg via wx.svg, which loads a
+        # native extension (_nanosvg). On some machines a security policy
+        # (AppLocker/WDAC/EDR) blocks that DLL from loading at all, which
+        # would otherwise crash the app before it even opens. Skip the
+        # splash and go straight to the main window in that case, rather
+        # than let a purely cosmetic feature take down the whole app.
+        SplashScreen(on_done=_start_main_app).Show()
+    except Exception as exc:
+        print(f"Splash screen unavailable ({exc}); starting main window directly.")
+        _start_main_app()
     app.MainLoop()
 
     app.MainLoop()
