@@ -3,6 +3,7 @@ fichier bm3/
 fichier bm3_*/
 fichier bma/
 fichier bma_*/
+test_bm3/
 
 # Generated .bma configuration files, wherever they end up
 *.bma

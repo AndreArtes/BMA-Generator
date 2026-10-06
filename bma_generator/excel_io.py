@@ -199,6 +199,23 @@ def read_roles(xlsx_path):
     return roles
 
 
+def _ensure_brand_column(ws):
+    """Retourne l'index (0-based) de la colonne 'Brand' de la feuille
+    Products, en la creant (header + cellules vides) si elle n'existe pas
+    encore - une source bm3 sans colonne Brand du tout (ex. Edrien) ne doit
+    pas faire echouer silencieusement un brand_override."""
+
+    header_row = next(ws.iter_rows(min_row=1, max_row=1))
+    header = [cell.value for cell in header_row]
+    for i, name in enumerate(header):
+        if name and str(name).strip().lower() == "brand":
+            return i
+
+    brand_col = len(header)
+    ws.cell(row=1, column=brand_col + 1, value="Brand")
+    return brand_col
+
+
 def write_bm3_with_prefix(source_xlsx, out_path, prefix, id_map, brand_override=None):
     """Copie le fichier bm3 source en renommant la colonne 'Product ID'
     (Products colonne A, Assets colonne A, Parameters colonne B) selon
@@ -206,26 +223,22 @@ def write_bm3_with_prefix(source_xlsx, out_path, prefix, id_map, brand_override=
     la feuille Assets pour qu'ils pointent vers les dossiers renommes
     (voir copy_bm3_asset_folders, qui cree physiquement ces dossiers).
 
-    Si brand_override est fourni et qu'une colonne 'Brand' existe dans la
-    feuille Products, sa valeur y est ecrite pour chaque produit (la copie
-    du bm3 reste alors coherente avec le Brand saisi dans l'interface)."""
+    Si brand_override est fourni, sa valeur est ecrite dans la colonne
+    'Brand' de la feuille Products pour chaque produit (colonne creee si
+    elle n'existait pas), pour que la copie du bm3 reste coherente avec le
+    Brand saisi dans l'interface."""
 
     wb = openpyxl.load_workbook(source_xlsx, data_only=True)
 
     ws = wb["Products"]
-    header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-    brand_col = None
-    for i, name in enumerate(header):
-        if name and str(name).strip().lower() == "brand":
-            brand_col = i
-            break
+    brand_col = _ensure_brand_column(ws) if brand_override else None
 
     for row in ws.iter_rows(min_row=2):
         cell = row[0]
         if cell.value in id_map:
             cell.value = id_map[cell.value]
         if brand_override and brand_col is not None:
-            row[brand_col].value = brand_override
+            ws.cell(row=cell.row, column=brand_col + 1, value=brand_override)
 
     ws = wb["Assets"]
     for row in ws.iter_rows(min_row=2):
@@ -244,6 +257,26 @@ def write_bm3_with_prefix(source_xlsx, out_path, prefix, id_map, brand_override=
         cell = row[1]
         if cell.value in id_map:
             cell.value = id_map[cell.value]
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+
+
+def write_bm3_with_brand(source_xlsx, out_path, brand):
+    """Copie le fichier bm3 source en ecrivant `brand` dans la colonne
+    'Brand' de la feuille Products pour chaque produit (colonne creee si
+    absente). Aucun ID, chemin d'asset ou dossier physique n'est touche :
+    contrairement au prefixe, un changement de Brand seul ne renomme rien,
+    donc pas besoin de copier les dossiers .BM3 - juste l'Excel."""
+
+    wb = openpyxl.load_workbook(source_xlsx, data_only=True)
+
+    ws = wb["Products"]
+    brand_col = _ensure_brand_column(ws)
+    for row in ws.iter_rows(min_row=2):
+        if not row[0].value:
+            continue
+        ws.cell(row=row[0].row, column=brand_col + 1, value=brand)
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)

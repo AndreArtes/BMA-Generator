@@ -592,8 +592,12 @@ class MainFrame(wx.Frame):
     def apply_brand(self):
         """Writes the Brand field's value into the Brand column of the
         table for every product (or restores the original value if the
-        field is empty). This change only takes effect when clicking
-        'Generate .BMA': it is not saved before that."""
+        field is empty), AND writes a copy of the current bm3 Excel with
+        that Brand applied (sibling file, original never touched) - unlike
+        the rest of the Brand handling, this file write happens right away,
+        not only at 'Generate .BMA'. No asset folders need copying here
+        (Brand changes no ID or path), so this is just the one Excel file,
+        unlike 'Add prefix' which also copies the .BM3 model folders."""
         if not self.products:
             wx.MessageBox("Load the products first (button 1).", "Warning", wx.OK | wx.ICON_WARNING)
             return
@@ -605,10 +609,20 @@ class MainFrame(wx.Frame):
         for row, p in enumerate(self.products):
             self.grid.SetCellValue(row, brand_col, value if value else (p.brand or ""))
 
-        if value:
-            self.log_line(f"Brand '{value}' applied in the table for {len(self.products)} product(s).", "load")
-        else:
+        if not value:
             self.log_line("Brand empty: values restored from the bm3 in the table.", "load")
+            return
+
+        self.log_line(f"Brand '{value}' applied in the table for {len(self.products)} product(s).", "load")
+
+        try:
+            bm3_xlsx = _find_bm3_xlsx(self.bm3_dir)
+            safe_brand = "".join(c if c.isalnum() or c in "-_" else "_" for c in value)
+            out_path = Path(self.bm3_dir).parent / f"{bm3_xlsx.stem}_{safe_brand}{bm3_xlsx.suffix}"
+            excel_io.write_bm3_with_brand(bm3_xlsx, out_path, value)
+            self.log_line(f"bm3 copy with Brand written: {out_path}", "load")
+        except Exception as exc:
+            self._error(f"Brand applied in the table, but writing the bm3 copy failed:\n{exc}")
 
     def apply_prefix(self):
         if not self.products:
