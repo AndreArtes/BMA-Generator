@@ -4,6 +4,10 @@ fichier bm3_*/
 fichier bma/
 fichier bma_*/
 test_bm3/
+test_angle_135/
+
+# Client-specific HomeByMe brand list (blanked in bma_generator/utilities_data.py)
+brands_local.txt
 
 # Generated .bma configuration files, wherever they end up
 *.bma

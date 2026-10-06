@@ -77,7 +77,7 @@ def _output_row(assembly_id, param_id, ptype, translation_key, editable, default
     ]
 
 
-def build_bma_json(product, role, extra_parameters=None):
+def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None):
     """Construit le JSON .BMA pour ce produit/role.
 
     Seuls les parametres bm3 de type "Product" (references a un autre
@@ -97,7 +97,7 @@ def build_bma_json(product, role, extra_parameters=None):
     Retourne (data, package_id, warnings) : warnings est toujours vide ici,
     conserve pour compatibilite avec les appelants existants.
     """
-    relations, anchors = tpl.build_role_definition(role)
+    relations, anchors = tpl.role_definition(role, anchor_overrides)
     anchors = [{"uuid": new_uuid(), **a} for a in anchors]
 
     package_id = f"{product.product_id}{PACKAGE_SUFFIX}"
@@ -179,13 +179,13 @@ def _normalize_role_info(value):
     return value, None
 
 
-def find_reference_depth(product, role, roles_by_id, products_by_id):
+def find_reference_depth(product, role, roles_by_id, products_by_id, anchor_overrides=None):
     """Deduit la profondeur du/des module(s) voisin(s) auquel ce produit va
     se connecter (n'importe quel role dans tpl.LATERAL_ALIGN_ROLES, pas
     seulement chaise longue), en cherchant parmi les autres produits du lot
     ceux dont le role expose un tag que ce produit peut recevoir."""
 
-    wanted_tags = tpl.receive_tags(role)
+    wanted_tags = tpl.receive_tags(role, anchor_overrides)
     depths = []
     for other_id, other_role in roles_by_id.items():
         if other_id == product.product_id or not other_role or other_role not in tpl.ALL_ROLES:
@@ -196,7 +196,7 @@ def find_reference_depth(product, role, roles_by_id, products_by_id):
             # connecte, jamais celle d'une chaise longue voisine (qui aurait
             # elle-meme une profondeur non standard).
             continue
-        if tpl.exposed_tags(other_role) & wanted_tags:
+        if tpl.exposed_tags(other_role, anchor_overrides) & wanted_tags:
             other_product = products_by_id.get(other_id)
             if other_product is not None and other_product.depth is not None:
                 depths.append(other_product.depth)
@@ -214,12 +214,14 @@ def find_reference_depth(product, role, roles_by_id, products_by_id):
     return depths[0], warnings
 
 
-def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
+def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_overrides=None):
     """Genere l'arborescence fichier bma/ pour tous les produits ayant un role.
 
     `roles` : dict {product_id: role} ou {product_id: {"role":.., "ref_depth":..}}.
     `brand_override` : si fourni, remplace la colonne Brand du bm3 source
     (prioritaire) ; sinon la valeur du bm3 est conservee.
+    `anchor_overrides` : templates.AnchorOverrides (feuille Anchors du
+    fichier de roles), ou None pour les tags/compatibilites par defaut.
 
     Retourne (generated, skipped, rows_products, rows_assets, rows_parameters,
     warnings, products_header).
@@ -260,7 +262,9 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
         if role in tpl.LATERAL_ALIGN_ROLES:
             ref_depth = ref_depth_overrides.get(product.product_id)
             if ref_depth is None:
-                ref_depth, dep_warnings = find_reference_depth(product, role, roles_by_id, products_by_id)
+                ref_depth, dep_warnings = find_reference_depth(
+                    product, role, roles_by_id, products_by_id, anchor_overrides
+                )
                 warnings.extend(dep_warnings)
             if ref_depth is None:
                 # Pas de voisin compatible dans ce lot : repli sur la propre
@@ -294,7 +298,21 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
                 )
             )
 
-        data, package_id, param_warnings = build_bma_json(product, role, extra_parameters)
+        if role in tpl.CORNER_135_ROLES:
+            # Decalage des ancres vers l'interieur, expose comme parametre
+            # numerique (offSetModule de la reference test_angle_135).
+            extra_parameters = (extra_parameters or []) + [
+                {"type": "number", "name": tpl.OFFSET_PARAM_NAME, "value": tpl.OFFSET_DEFAULT, "magnitude": 0}
+            ]
+            extra_output_rows.append(
+                _output_row(
+                    assembly_id, tpl.OFFSET_PARAM_NAME, "Real (continuous)", tpl.OFFSET_PARAM_NAME,
+                    "None", tpl.OFFSET_DEFAULT, tpl.OFFSET_DEFAULT, "false", "", "Length", "", "",
+                    None, None, "in", False, None,
+                )
+            )
+
+        data, package_id, param_warnings = build_bma_json(product, role, extra_parameters, anchor_overrides)
         warnings.extend(param_warnings)
 
         product_dir = out_dir / assembly_id
@@ -308,17 +326,14 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None):
         if src_thumb.exists():
             shutil.copyfile(src_thumb, product_dir / "thumbnail-512.jpg")
 
-        reference_numeric = product.reference
-        if reference_numeric and "-" in reference_numeric:
-            reference_numeric = reference_numeric.split("-", 1)[1]
-        if reference_numeric and reference_numeric.endswith("_bm3"):
-            reference_numeric = reference_numeric[: -len("_bm3")]
-
         # Un Brand saisi dans l'interface remplace explicitement celui du bm3
         # source (l'utilisateur veut pouvoir forcer la marque a l'export).
         brand = brand_override or product.brand or ""
         extra_values = [product.source_columns.get(name) for name in extra_columns]
-        rows_products.append([assembly_id, reference_numeric, product.product_type, brand] + extra_values)
+        # Reference reprise telle quelle du bm3 (pas de troncature du prefixe
+        # de role ni du suffixe "_bm3") : les deux catalogues doivent porter
+        # la meme reference.
+        rows_products.append([assembly_id, product.reference, product.product_type, brand] + extra_values)
         rows_assets.append([
             assembly_id,
             f"{assembly_id}/HQ-root.BMA",

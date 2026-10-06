@@ -31,6 +31,8 @@ TABLE_FRONTAL = "table_frontal"
 CHAISE_LONGUE = "chaise_longue"
 CHAISE_LONGUE_LEFT = "chaise_longue_left"
 CHAISE_LONGUE_RIGHT = "chaise_longue_right"
+CORNER_LEFT_135 = "corner_left_135"
+CORNER_RIGHT_135 = "corner_right_135"
 
 ALL_ROLES = [
     CENTRAL,
@@ -38,6 +40,8 @@ ALL_ROLES = [
     LATERAL_RIGHT,
     CORNER_LEFT,
     CORNER_RIGHT,
+    CORNER_LEFT_135,
+    CORNER_RIGHT_135,
     POUF_LATERAL,
     POUF_FRONTAL,
     TABLE_LATERAL,
@@ -60,8 +64,22 @@ CHAISE_LONGUE_ROLES = {CHAISE_LONGUE, CHAISE_LONGUE_LEFT, CHAISE_LONGUE_RIGHT}
 # connectes n'ont pas la meme profondeur (cas le plus visible avec une
 # chaise longue, mais ca vaut pour n'importe quelle paire de profondeurs
 # differentes). Seuls les roles purement frontaux (POUF_FRONTAL,
-# TABLE_FRONTAL) n'ont pas d'ancre laterale et restent en dehors.
-LATERAL_ALIGN_ROLES = {r for r in ALL_ROLES if r not in (POUF_FRONTAL, TABLE_FRONTAL)}
+# TABLE_FRONTAL) n'ont pas d'ancre laterale et restent en dehors, ainsi que
+# les angles 135 (ancres inclinees a y=0, copiees telles quelles du .bma de
+# reference test_angle_135).
+CORNER_135_ROLES = {CORNER_LEFT_135, CORNER_RIGHT_135}
+LATERAL_ALIGN_ROLES = {r for r in ALL_ROLES if r not in (POUF_FRONTAL, TABLE_FRONTAL) and r not in CORNER_135_ROLES}
+
+# Modules d'angle 135 : chaque ancre laterale est inclinee de
+# ANGLE_135_DEFAULT_DEGREES (valeur du .bma de reference test_angle_135),
+# vers les x negatifs pour un angle gauche, positifs pour un angle droit -
+# meme convention de signe que l'ancre avant de corner_left/corner_right.
+# Modifiable par role dans la feuille Anchors du fichier de roles.
+ANGLE_135_DEFAULT_DEGREES = 15
+# Decalage des ancres vers l'interieur du module (mm), expose comme
+# parametre numerique du .bma (comme offSetModule dans la reference).
+OFFSET_PARAM_NAME = "offSetModule"
+OFFSET_DEFAULT = 0
 
 # Nom du parametre numerique injecte dans les .BMA "chaise longue" pour
 # stocker la profondeur des modules standards auxquels elle se connecte
@@ -79,6 +97,13 @@ _LEFT_KEYWORDS = ("left", "gauche")
 _CORNER_KEYWORDS = ("corner", "angle", "coin")
 _CHAISE_LONGUE_KEYWORDS = ("chaiselong",)  # couvre chaiselong/chaiselongue/"chaise long(ue)" une fois nettoye
 _CENTRAL_KEYWORDS = ("central", "centre")
+_POUF_KEYWORDS = ("pouf",)
+_TABLE_KEYWORDS = ("table",)
+_FRONTAL_KEYWORDS = ("front", "face", "avant")
+_LATERAL_KEYWORDS = ("lateral", "latéral", "side", "cote", "côté")
+# "135" isole (pas un morceau d'un code plus long comme "213578") : teste
+# sur la reference brute, _clean_reference supprimant les chiffres.
+_ANGLE_135 = re.compile(r"(?<!\d)135(?!\d)")
 
 
 def _clean_reference(reference):
@@ -91,7 +116,7 @@ def infer_role_from_reference(reference):
     """Deduit le role depuis n'importe quel mot-cle present dans la colonne
     Reference du bm3 (pas juste un prefixe exact avant le premier '-').
     Retourne None si aucun mot-cle reconnu ou si le role reste ambigu
-    (ex: "pouf"/"table" seuls, qui ont plusieurs variantes possibles)."""
+    (ex: "pouf"/"table" sans "frontal"/"lateral", qui ont deux variantes)."""
 
     clean = _clean_reference(reference)
     if not clean:
@@ -102,7 +127,14 @@ def infer_role_from_reference(reference):
     has_corner = any(k in clean for k in _CORNER_KEYWORDS)
     has_chaise_longue = any(k in clean for k in _CHAISE_LONGUE_KEYWORDS)
     has_central = any(k in clean for k in _CENTRAL_KEYWORDS)
+    has_frontal = any(k in clean for k in _FRONTAL_KEYWORDS)
+    has_lateral = any(k in clean for k in _LATERAL_KEYWORDS)
 
+    if has_corner and _ANGLE_135.search(reference):
+        if has_right:
+            return CORNER_RIGHT_135
+        if has_left:
+            return CORNER_LEFT_135
     if has_corner and has_right:
         return CORNER_RIGHT
     if has_corner and has_left:
@@ -113,6 +145,16 @@ def infer_role_from_reference(reference):
         return CHAISE_LONGUE_LEFT
     if has_chaise_longue:
         return CHAISE_LONGUE
+    for keywords, frontal, lateral in (
+        (_POUF_KEYWORDS, POUF_FRONTAL, POUF_LATERAL),
+        (_TABLE_KEYWORDS, TABLE_FRONTAL, TABLE_LATERAL),
+    ):
+        if any(k in clean for k in keywords):
+            if has_frontal and not has_lateral:
+                return frontal
+            if has_lateral and not has_frontal:
+                return lateral
+            return None
     if has_central:
         return CENTRAL
     if has_right:
@@ -120,6 +162,13 @@ def infer_role_from_reference(reference):
     if has_left:
         return LATERAL_LEFT
     return None
+
+
+# Tags des ancres des angles 135 : cote gauche (x negatif) et cote droit
+# (x positif) de chaque variante. Une ancre de cote gauche recoit les tags
+# "cote droit" des autres modules, et inversement.
+_TAGS_135_L = ["Angle135GaucheL", "Angle135DroitL"]
+_TAGS_135_R = ["Angle135GaucheR", "Angle135DroitR"]
 
 
 def _rel_half_width(name, expr_true):
@@ -221,12 +270,12 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["CentralL"],
-                ["GaucheTable", "CentralR", "AngleGaucheR", "PoufLatR", "TableBasseR", "-DroitTable"],
+                ["GaucheTable", "CentralR", "AngleGaucheR", "PoufLatR", "TableBasseR", *_TAGS_135_R, "-DroitTable"],
                 {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["CentralR"],
-                ["DroitTable", "CentralL", "AngleDroitL", "PoufLatL", "TableBasseL", "-GaucheTable"],
+                ["DroitTable", "CentralL", "AngleDroitL", "PoufLatL", "TableBasseL", *_TAGS_135_L, "-GaucheTable"],
                 {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
@@ -252,7 +301,7 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["GaucheTable"],
-                ["CentralL", "AngleDroitL", "AngleGaucheF"],
+                ["CentralL", "AngleDroitL", "AngleGaucheF", *_TAGS_135_L],
                 {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
@@ -271,7 +320,7 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["DroitTable"],
-                ["CentralR", "AngleGaucheR", "AngleDroitF"],
+                ["CentralR", "AngleGaucheR", "AngleDroitF", *_TAGS_135_R],
                 {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
@@ -292,7 +341,7 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["AngleGaucheR"],
-                ["CentralL", "AngleDroitL", "DroitTable", "PoufLatL", "TableBasseL"],
+                ["CentralL", "AngleDroitL", "DroitTable", "PoufLatL", "TableBasseL", *_TAGS_135_L],
                 {"x": "xPositionAncreDroit", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
@@ -319,7 +368,7 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["AngleDroitL"],
-                ["CentralR", "AngleGaucheR", "GaucheTable", "PoufLatR", "TableBasseR"],
+                ["CentralR", "AngleGaucheR", "GaucheTable", "PoufLatR", "TableBasseR", *_TAGS_135_R],
                 {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
@@ -346,12 +395,12 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["PoufLatL"],
-                ["CentralR", "AngleGaucheR", "AngleDroitF"],
+                ["CentralR", "AngleGaucheR", "AngleDroitF", *_TAGS_135_R],
                 {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["PoufLatR"],
-                ["CentralL", "AngleDroitL", "AngleGaucheF"],
+                ["CentralL", "AngleDroitL", "AngleGaucheF", *_TAGS_135_L],
                 {"x": "xPositionAncreDroit", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
@@ -393,12 +442,12 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["TableBasseL"],
-                ["CentralR", "AngleGaucheR"],
+                ["CentralR", "AngleGaucheR", *_TAGS_135_R],
                 {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["TableBasseR"],
-                ["CentralL", "AngleDroitL"],
+                ["CentralL", "AngleDroitL", *_TAGS_135_L],
                 {"x": "xPositionAncreDroit", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
@@ -441,12 +490,12 @@ def build_role_definition(role):
         anchors = [
             _anchor(
                 ["CentralL"],
-                ["GaucheTable", "CentralR", "AngleGaucheR", "PoufLatR", "TableBasseR", "-DroitTable"],
+                ["GaucheTable", "CentralR", "AngleGaucheR", "PoufLatR", "TableBasseR", *_TAGS_135_R, "-DroitTable"],
                 {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
             ),
             _anchor(
                 ["CentralR"],
-                ["DroitTable", "CentralL", "AngleDroitL", "PoufLatL", "TableBasseL", "-GaucheTable"],
+                ["DroitTable", "CentralL", "AngleDroitL", "PoufLatL", "TableBasseL", *_TAGS_135_L, "-GaucheTable"],
                 {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
             ),
         ]
@@ -466,7 +515,7 @@ def build_role_definition(role):
             anchors = [
                 _anchor(
                     ["GaucheTable"],
-                    ["CentralL", "AngleDroitL", "AngleGaucheF"],
+                    ["CentralL", "AngleDroitL", "AngleGaucheF", *_TAGS_135_L],
                     {"x": "xPositionAncreDroite", "y": "yPositionAncreLaterale", "z": 0},
                 ),
             ]
@@ -481,27 +530,129 @@ def build_role_definition(role):
             anchors = [
                 _anchor(
                     ["DroitTable"],
-                    ["CentralR", "AngleGaucheR", "AngleDroitF"],
+                    ["CentralR", "AngleGaucheR", "AngleDroitF", *_TAGS_135_R],
                     {"x": "xPositionAncreGauche", "y": "yPositionAncreLaterale", "z": 0},
                 ),
             ]
         return relations, anchors
 
+    if role in CORNER_135_ROLES:
+        return _corner_135_definition(role, ANGLE_135_DEFAULT_DEGREES)
+
     raise ValueError(f"Role inconnu: {role!r}. Roles valides: {ALL_ROLES}")
 
 
-def exposed_tags(role):
+def _rel_offset_width(name, expression):
+    return {
+        "symbolDependencies": ["monModule", OFFSET_PARAM_NAME],
+        "componentDependencies": [
+            {"propertyName": "width", "componentName": "MonModule", "component": "MonModule"}
+        ],
+        "type": "number",
+        "name": name,
+        "expression": expression,
+    }
+
+
+def _rel_constant(name, symbols, expression):
+    return {"symbolDependencies": symbols, "componentDependencies": [], "type": "number",
+            "name": name, "expression": expression}
+
+
+def _corner_135_definition(role, degrees):
+    """Angle 135, reproduit du .bma de reference test_angle_135 : deux
+    ancres laterales (droite puis gauche), rentrees de offSetModule depuis
+    les bords, inclinees de +/- `degrees` (cos/sin calcules par le
+    configurateur). Angle gauche : angle negatif (ancres tournees vers les x
+    negatifs, comme l'ancre avant de corner_left) ; angle droit : positif.
+    Les noms de relations (dont la faute "xOrintation") sont ceux de la
+    reference."""
+
+    sign = -1 if role == CORNER_LEFT_135 else 1
+    side = "Gauche" if role == CORNER_LEFT_135 else "Droit"
+    relations = [
+        _rel_offset_width(
+            "xPositionAncreGauche",
+            f"(monModule!== null) && (MonModule!== null) ? -(MonModule.width/2) +{OFFSET_PARAM_NAME}:0",
+        ),
+        _rel_offset_width(
+            "xPositionAncreDroit",
+            f"(monModule!== null) && (MonModule!== null) ? (MonModule.width/2)-{OFFSET_PARAM_NAME} :0",
+        ),
+        _rel_constant("angleRad", ["Pi"], f"{_format_number(sign * degrees)}*Pi/180"),
+        _rel_constant("yOrientation", ["angleRad"], "Math.cos(angleRad)"),
+        _rel_constant("xOrintationRight", ["angleRad"], "Math.sin(angleRad)"),
+        _rel_constant("xOrintationLeft", ["angleRad"], "-Math.sin(angleRad)"),
+    ]
+    anchors = [
+        _anchor(
+            [f"Angle135{side}R"],
+            ["CentralL", "AngleDroitL", "DroitTable", "PoufLatL", "TableBasseL", *_TAGS_135_L],
+            {"x": "xPositionAncreDroit", "y": 0, "z": 0},
+            direction_y={"x": "xOrintationRight", "y": "yOrientation", "z": 0},
+        ),
+        _anchor(
+            [f"Angle135{side}L"],
+            ["CentralR", "AngleGaucheR", "GaucheTable", "PoufLatR", "TableBasseR", *_TAGS_135_R],
+            {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+            direction_y={"x": "xOrintationLeft", "y": "yOrientation", "z": 0},
+        ),
+    ]
+    return relations, anchors
+
+
+def _format_number(value):
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+class AnchorOverrides:
+    """Personnalisation des ancres lue depuis la feuille Anchors du fichier
+    de roles : `anchors` {(role, numero d'ancre 1..n): (tags, receive_tags)}
+    remplace les tags/receiveTags par defaut, `angles` {role: degres}
+    remplace l'inclinaison des roles d'angle 135. La geometrie (positions,
+    relations) n'est jamais modifiable ici : seulement le vocabulaire de
+    tags, les compatibilites et l'angle."""
+
+    def __init__(self, anchors=None, angles=None):
+        self.anchors = anchors or {}
+        self.angles = angles or {}
+
+
+def role_definition(role, overrides=None):
+    """build_role_definition + application des personnalisations eventuelles."""
+    if overrides is not None and role in CORNER_135_ROLES and role in overrides.angles:
+        relations, anchors = _corner_135_definition(role, overrides.angles[role])
+    else:
+        relations, anchors = build_role_definition(role)
+    if overrides is not None:
+        for index, anchor in enumerate(anchors, start=1):
+            custom = overrides.anchors.get((role, index))
+            if custom:
+                anchor["tags"], anchor["receiveTags"] = list(custom[0]), list(custom[1])
+    return relations, anchors
+
+
+def anchor_angle(role, overrides=None):
+    """Inclinaison (degres) des ancres d'un role d'angle 135, sinon None."""
+    if role not in CORNER_135_ROLES:
+        return None
+    if overrides is not None and role in overrides.angles:
+        return overrides.angles[role]
+    return ANGLE_135_DEFAULT_DEGREES
+
+
+def exposed_tags(role, overrides=None):
     """Tags qu'expose (offre) ce role sur ses ancres, tous confondus."""
-    _, anchors = build_role_definition(role)
+    _, anchors = role_definition(role, overrides)
     tags = set()
     for anchor in anchors:
         tags.update(anchor["tags"])
     return tags
 
 
-def receive_tags(role):
+def receive_tags(role, overrides=None):
     """Tags que ce role peut recevoir (accepter) sur ses ancres, tous confondus."""
-    _, anchors = build_role_definition(role)
+    _, anchors = role_definition(role, overrides)
     tags = set()
     for anchor in anchors:
         tags.update(anchor["receiveTags"])

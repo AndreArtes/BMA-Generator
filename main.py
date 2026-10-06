@@ -17,15 +17,21 @@ Command-line usage:
     python main.py generate --bm3-dir "fichier bm3" --roles roles.xlsx --out-dir "fichier bma"
         -> generates the .BMA files + the output Excel in --out-dir.
 
-Valid roles: central, lateral_left, lateral_right, corner_left,
-corner_right, pouf_lateral, pouf_frontal, table_lateral, table_frontal.
+    python main.py build-bm3 --src-dir test_bm3 --out-dir "fichier bm3_test"
+        -> builds a bm3 export (one folder per product + Excel with the
+           dimensions read from the .BM3 files) from a flat folder of .BM3
+           files. Reference is left empty (fill it in the GUI or the Excel).
+
+Valid roles: see bma_generator.templates.ALL_ROLES. The roles file also has
+an "Anchors" sheet where anchor tags, compatibilities (receive tags) and the
+135-degree corner angle can be edited; generation uses it.
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-from bma_generator import excel_io, generator, templates as tpl
+from bma_generator import bm3_builder, excel_io, generator, templates as tpl
 
 
 def find_bm3_xlsx(bm3_dir):
@@ -62,9 +68,11 @@ def cmd_generate(args):
         return
 
     roles = excel_io.read_roles(roles_path)
+    anchor_overrides = excel_io.read_anchor_overrides(roles_path)
 
     generated, skipped, rows_products, rows_assets, rows_parameters, warnings, products_header = generator.generate(
-        products, roles, args.bm3_dir, args.out_dir, brand_override=getattr(args, "brand", None)
+        products, roles, args.bm3_dir, args.out_dir, brand_override=getattr(args, "brand", None),
+        anchor_overrides=anchor_overrides,
     )
 
     if rows_products:
@@ -79,6 +87,21 @@ def cmd_generate(args):
         print(f"{len(skipped)} product(s) skipped (missing or invalid role in {roles_path}): {', '.join(skipped)}")
     for warning in warnings:
         print(f"WARNING: {warning}")
+
+
+def cmd_build_bm3(args):
+    products = bm3_builder.scan_3d_folder(args.src_dir, log=lambda msg: print(f"WARNING: {msg}"))
+    product_type = ""
+    if args.product_type:
+        product_type = bm3_builder.resolve_product_type(args.product_type)
+        if product_type is None:
+            raise ValueError(f"Unknown or ambiguous Product Type: {args.product_type!r}")
+    for p in products:
+        p.product_type = product_type
+        p.brand = args.brand or ""
+        print(f"{p.product_id}: W {p.width:.2f}  D {p.depth:.2f}  H {p.height:.2f}  ({', '.join(p.files)})")
+    out_xlsx = bm3_builder.write_bm3_export(products, args.out_dir, log=print)
+    print(f"bm3 Excel written: {out_xlsx} ({len(products)} product(s); fill in the Reference column).")
 
 
 def run_interactive():
@@ -112,6 +135,13 @@ def main():
     p_gen.add_argument("--out-dir", default="fichier bma")
     p_gen.add_argument("--brand", default=None, help="Fallback value for the Brand column if missing from the bm3 source.")
     p_gen.set_defaults(func=cmd_generate)
+
+    p_build = sub.add_parser("build-bm3", help="Builds a bm3 export from a flat folder of .BM3 files.")
+    p_build.add_argument("--src-dir", required=True, help="Folder containing the .BM3 files (<ID>.BM3).")
+    p_build.add_argument("--out-dir", required=True)
+    p_build.add_argument("--product-type", default=None, help="Product Type for every product (e.g. '381+Outdoor sofas').")
+    p_build.add_argument("--brand", default=None, help="Brand for every product.")
+    p_build.set_defaults(func=cmd_build_bm3)
 
     args = parser.parse_args()
     if not getattr(args, "command", None):

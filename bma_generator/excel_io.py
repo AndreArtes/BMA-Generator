@@ -151,25 +151,92 @@ ROLES_HEADER = [
 ]
 
 
+ANCHORS_SHEET = "Anchors"
+ANCHORS_HEADER = ["Role", "Anchor #", "Position", "Tags", "Receive tags", "Angle (deg)"]
+
+
+def _split_tags(value):
+    return [t.strip() for t in str(value or "").split(",") if t.strip()]
+
+
+def read_anchor_overrides(xlsx_path):
+    """Lit la feuille Anchors du fichier de roles (tags, receive tags et
+    angle des roles 135, modifiables a la main) et retourne un
+    templates.AnchorOverrides, ou None si le fichier/la feuille n'existe
+    pas. Leve ValueError sur une ligne invalide (role ou numero d'ancre
+    inconnu, ancre sans tag, angle non numerique)."""
+
+    if not Path(xlsx_path).exists():
+        return None
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    if ANCHORS_SHEET not in wb.sheetnames:
+        return None
+
+    anchors, angles = {}, {}
+    for line, row in enumerate(wb[ANCHORS_SHEET].iter_rows(min_row=2, values_only=True), start=2):
+        row = list(row) + [None] * (len(ANCHORS_HEADER) - len(row))
+        role, index, _position, tags, receive, angle = row[:6]
+        if not role:
+            continue
+        role = str(role).strip()
+        if role not in tpl.ALL_ROLES:
+            raise ValueError(f"{ANCHORS_SHEET} line {line}: unknown role {role!r}")
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            raise ValueError(f"{ANCHORS_SHEET} line {line}: invalid anchor number {index!r}") from None
+        if not 1 <= index <= len(tpl.build_role_definition(role)[1]):
+            raise ValueError(f"{ANCHORS_SHEET} line {line}: {role} has no anchor #{index}")
+        if not _split_tags(tags):
+            raise ValueError(f"{ANCHORS_SHEET} line {line}: anchor without tag")
+        anchors[(role, index)] = (_split_tags(tags), _split_tags(receive))
+        if angle not in (None, "") and role in tpl.CORNER_135_ROLES:
+            try:
+                angles[role] = float(str(angle).replace(",", "."))
+            except ValueError:
+                raise ValueError(f"{ANCHORS_SHEET} line {line}: invalid angle {angle!r}") from None
+    return tpl.AnchorOverrides(anchors, angles)
+
+
+def _write_anchors_sheet(wb, overrides):
+    """Une ligne par ancre de chaque role (valeurs par defaut, ou
+    personnalisees si `overrides`)."""
+
+    ws = wb.create_sheet(ANCHORS_SHEET)
+    ws.append(ANCHORS_HEADER)
+    for role in tpl.ALL_ROLES:
+        _relations, anchors = tpl.role_definition(role, overrides)
+        angle = tpl.anchor_angle(role, overrides)
+        for index, anchor in enumerate(anchors, start=1):
+            position = anchor["position"]
+            ws.append([
+                role, index, f"x={position['x']}, y={position['y']}",
+                ", ".join(anchor["tags"]), ", ".join(anchor["receiveTags"]),
+                angle if angle is not None and index == 1 else None,
+            ])
+    for col, width in zip("ABCDEF", (22, 10, 50, 22, 90, 12)):
+        ws.column_dimensions[col].width = width
+
+
 def write_roles_template(products, out_path):
     """Genere un fichier xlsx avec une colonne Role pre-remplie quand
     deductible sans ambiguite, et 'A_COMPLETER' sinon."""
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Roles"
-    ws.append(ROLES_HEADER)
-    valid_roles = ", ".join(tpl.ALL_ROLES)
-    for p in products:
-        role = p.inferred_role or "A_COMPLETER"
-        ws.append([p.product_id, p.reference, p.product_type, role, "", valid_roles])
-    wb.save(out_path)
+    rows = [(p.product_id, p.reference, p.product_type, p.inferred_role or "A_COMPLETER", "") for p in products]
+    write_roles_from_rows(rows, out_path)
 
 
-def write_roles_from_rows(rows, out_path):
+def write_roles_from_rows(rows, out_path, anchor_overrides=None):
     """Enregistre un fichier de roles a partir de lignes
     (product_id, reference, product_type, role, ref_depth), typiquement
-    issues de l'interface graphique. ref_depth peut etre vide/None."""
+    issues de l'interface graphique. ref_depth peut etre vide/None.
+
+    Ecrit aussi la feuille Anchors : `anchor_overrides` si fourni, sinon
+    celle deja presente dans out_path (pour ne jamais perdre les tags
+    modifies a la main), sinon les valeurs par defaut."""
+
+    if anchor_overrides is None:
+        anchor_overrides = read_anchor_overrides(out_path)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -180,7 +247,41 @@ def write_roles_from_rows(rows, out_path):
         product_id, reference, product_type, role = row[0], row[1], row[2], row[3]
         ref_depth = row[4] if len(row) > 4 else ""
         ws.append([product_id, reference, product_type, role, ref_depth, valid_roles])
+    _write_anchors_sheet(wb, anchor_overrides)
     wb.save(out_path)
+
+
+def read_roles_rows(xlsx_path):
+    """Lignes brutes (product_id, reference, product_type, role, ref_depth)
+    de la feuille Roles, [] si le fichier n'existe pas."""
+    if not Path(xlsx_path).exists():
+        return []
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    rows = []
+    for row in list(wb["Roles"].iter_rows(values_only=True))[1:]:
+        if row and row[0]:
+            row = list(row[:5]) + [None] * (5 - len(row[:5]))
+            rows.append(tuple("" if v is None else v for v in row))
+    return rows
+
+
+def update_roles_file(xlsx_path, rows):
+    """Ajoute/remplace dans le fichier de roles (cree s'il n'existe pas) les
+    lignes (product_id, reference, product_type, role), sans toucher aux
+    autres produits deja presents. La profondeur de reference deja saisie
+    pour un produit est conservee."""
+
+    existing = [list(row) for row in read_roles_rows(xlsx_path)]
+    by_id = {row[0]: row for row in existing}
+    for product_id, reference, product_type, role in rows:
+        if product_id in by_id:
+            by_id[product_id][1:4] = [reference, product_type, role]
+        else:
+            row = [product_id, reference, product_type, role, ""]
+            existing.append(row)
+            by_id[product_id] = row
+
+    write_roles_from_rows([tuple("" if v is None else v for v in row) for row in existing], xlsx_path)
 
 
 def read_roles(xlsx_path):
