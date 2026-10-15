@@ -1,6 +1,8 @@
 # bm3 source data and bma output (large 3D assets, not source code)
 fichier bm3/
 fichier bm3_*/
+fichier bm3mat/
+fichier bm3mat_*/
 fichier bma/
 fichier bma_*/
 test_bm3/

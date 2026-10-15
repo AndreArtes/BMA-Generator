@@ -35,7 +35,9 @@ LOD_FILE_NAMES = {"HQ": "HQ-Lod_0_std.BM3", "MQ": "MQ-Lod_1_std.BM3", "LQ": "LQ-
 THUMBNAIL_STEM = "thumbnail-512"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 
-PRODUCTS_HEADER = ["Product ID", "Reference", "Product Type", "Brand"]
+CATEGORY_ID = "Furniture"
+
+PRODUCTS_HEADER = ["Product ID", "Reference", "Product Type", "Brand", "Category ID"]
 ASSETS_HEADER = ["Product ID", "Model 3D HQ", "Model 3D MQ", "Model 3D LQ", "Model 2D", "Thumbnail", "Media"]
 PARAMETERS_HEADER = [
     "Delete", "Product ID", "Parameter Definition ID", "Parameter ID", "Type",
@@ -63,6 +65,7 @@ class SourceProduct:
         self.reference = ""
         self.product_type = ""
         self.brand = ""
+        self.category = CATEGORY_ID
         # Role d'assemblage (templates.ALL_ROLES) : deduit de la reference
         # ou choisi a la main ; pas dans l'Excel bm3, ecrit dans roles.xlsx.
         self.role = ""
@@ -191,7 +194,9 @@ def write_bm3_export(products, out_dir, log=None):
         if log:
             log(f"{pid}: {len(product.files)} 3D file(s){' + thumbnail' if thumbnail else ''} copied to {product_dir}")
 
-        ws_products.append([pid, product.reference or "", product.product_type or "", product.brand or ""])
+        ws_products.append([
+            pid, product.reference or "", product.product_type or "", product.brand or "", product.category or "",
+        ])
         ws_assets.append([pid, assets.get("HQ", ""), assets.get("MQ", ""), assets.get("LQ", ""), "", thumbnail, None])
 
         for name in DIMENSIONS:
@@ -215,7 +220,7 @@ def write_bm3_export(products, out_dir, log=None):
 
     for ws in (ws_products, ws_assets, ws_params):
         ws.column_dimensions["A"].width = 20
-    for col in ("B", "C", "D"):
+    for col in ("B", "C", "D", "E"):
         ws_products.column_dimensions[col].width = 25
     ws_utilities.column_dimensions["A"].width = 30
 

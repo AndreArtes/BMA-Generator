@@ -16,7 +16,7 @@ from pathlib import Path
 import wx
 import wx.grid
 
-from bma_generator import bm3_builder, excel_io, generator
+from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator
 from bma_generator import templates as tpl
 
 ROLE_VALUES = [""] + tpl.ALL_ROLES
@@ -388,7 +388,9 @@ class MainFrame(wx.Frame):
         row1.Add(self._icon_button(parent, wx.ART_GO_FORWARD, "Generate .BMA", self.run_generate), 0, wx.RIGHT, 6)
         row1.Add(self._icon_button(parent, wx.ART_UNDO, "Reset", self.reset), 0, wx.RIGHT, 6)
         row1.AddSpacer(16)
-        row1.Add(self._icon_button(parent, wx.ART_NEW, "Build bm3 from 3D files...", self.open_bm3_builder), 0)
+        row1.Add(self._icon_button(parent, wx.ART_NEW, "Build bm3 from 3D files...", self.open_bm3_builder),
+                 0, wx.RIGHT, 6)
+        row1.Add(self._icon_button(parent, wx.ART_NEW, "Build materials...", self.open_material_builder), 0)
 
         row2 = wx.BoxSizer(wx.HORIZONTAL)
         row2.Add(wx.StaticText(parent, label="ID prefix:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
@@ -812,6 +814,16 @@ class MainFrame(wx.Frame):
             self.bm3_dir = str(written_dir)
             self.load_products()
 
+    def open_material_builder(self):
+        """Opens the ".BM3MAT files -> material export" window. Materials
+        don't go through .BMA generation: the export is final as written."""
+        dlg = MaterialBuilderDialog(self)
+        dlg.ShowModal()
+        written_dir = dlg.written_dir
+        dlg.Destroy()
+        if written_dir is not None:
+            self.log_line(f"Materials export written to {written_dir}", "generated")
+
 
 class ProductTypeEditor(wx.grid.GridCellEditor):
     """Grid cell editor for Product Type: a text field with a filtered list
@@ -944,43 +956,27 @@ class ProductTypeEditor(wx.grid.GridCellEditor):
                 wx.CallAfter(self._grid.DisableCellEditControl)
 
 
-class Bm3BuilderDialog(wx.Dialog):
-    """Builds a bm3 export (one folder per product + export-products-bm3.xlsx)
-    from a flat folder of .BM3 files. Dimensions and materials come from the
-    3D files but stay editable; Reference/Brand are typed in, Product Type is
-    picked from the program's fixed list (bm3_builder.PRODUCT_TYPES), and the
-    role is inferred from the Reference unless set by hand. Cells support
-    Ctrl+C / Ctrl+V (also from/to Excel) and Delete. All file logic lives in
-    bma_generator.bm3_builder."""
+class _BuilderDialog(wx.Dialog):
+    """Shared base of the "flat folder of source files -> export" windows:
+    source/output folders, an editable grid (validated cells, Ctrl+C /
+    Ctrl+V also from/to Excel, Delete, "apply to all" for Product Type and
+    Brand), a log, and Scan / Write buttons. Subclasses define the columns,
+    labels and default folders, and implement scan() and write(); they can
+    extend _normalize() / _after_change() for their own columns."""
 
-    DEFAULT_SRC_DIR = "test_bm3"
+    COLUMNS = []  # (header, width, editable)
+    TITLE = ""
+    DEFAULT_SRC_DIR = ""
+    SRC_LABEL = ""
+    OUT_LABEL = ""
+    SCAN_LABEL = ""
+    WRITE_LABEL = ""
 
-    COLUMNS = [
-        # (header, width, editable)
-        ("Product ID", 110, False),
-        ("Reference", 220, True),
-        ("Role (auto / manual)", 150, True),
-        ("Product Type", 220, True),
-        ("Brand", 140, True),
-        ("Width", 80, True),
-        ("Depth", 80, True),
-        ("Height", 80, True),
-        ("Materials", 130, True),
-        ("3D files", 80, False),
-        ("Thumbnail", 100, False),
-    ]
-    COL = {name: i for i, (name, _w, _e) in enumerate(COLUMNS)}
-    ROLE = "Role (auto / manual)"
-    DIMENSION_COLS = {"Width": "width", "Depth": "depth", "Height": "height"}
-
-    def __init__(self, parent, roles_path):
-        super().__init__(parent, title="Build bm3 from 3D files",
+    def __init__(self, parent):
+        super().__init__(parent, title=self.TITLE,
                          style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER | wx.MAXIMIZE_BOX)
-        self.products = []
-        self.roles_path = roles_path
+        self.COL = {name: i for i, (name, _w, _e) in enumerate(self.COLUMNS)}
         self.written_dir = None  # set once an export has been written
-        self._manual_roles = set()  # rows whose role was set by hand
-        self._measured = {}  # (row, col) -> (displayed text, exact value)
 
         src_default = self.DEFAULT_SRC_DIR if Path(self.DEFAULT_SRC_DIR).is_dir() else ""
         self.src_ctrl = wx.TextCtrl(self, value=src_default)
@@ -988,8 +984,8 @@ class Bm3BuilderDialog(wx.Dialog):
 
         paths = wx.FlexGridSizer(cols=3, vgap=4, hgap=6)
         paths.AddGrowableCol(1)
-        self._path_row(paths, "3D files folder:", self.src_ctrl)
-        self._path_row(paths, "Output bm3 folder:", self.out_ctrl)
+        self._path_row(paths, self.SRC_LABEL, self.src_ctrl)
+        self._path_row(paths, self.OUT_LABEL, self.out_ctrl)
 
         self.grid = wx.grid.Grid(self)
         self.grid.CreateGrid(0, len(self.COLUMNS))
@@ -1002,38 +998,30 @@ class Bm3BuilderDialog(wx.Dialog):
             if not editable:
                 attr.SetReadOnly(True)
                 attr.SetBackgroundColour(wx.Colour(245, 245, 245))
-            elif name == self.ROLE:
-                attr.SetEditor(wx.grid.GridCellChoiceEditor(ROLE_VALUES, allowOthers=False))
-            elif name == "Product Type":
-                attr.SetEditor(ProductTypeEditor())
+            else:
+                editor = self._column_editor(name)
+                if editor:
+                    attr.SetEditor(editor)
             self.grid.SetColAttr(i, attr)
         self.grid.Bind(wx.grid.EVT_GRID_CELL_CHANGING, self._on_cell_changing)
         self.grid.Bind(wx.grid.EVT_GRID_CELL_CHANGED, self._on_cell_changed)
         self.grid.GetGridWindow().Bind(wx.EVT_KEY_DOWN, self._on_grid_key)
 
         bulk = wx.BoxSizer(wx.HORIZONTAL)
-        bulk.Add(wx.StaticText(self, label="Product Type for all:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self.type_all_ctrl = wx.ComboBox(self, choices=bm3_builder.PRODUCT_TYPES, size=(240, -1))
-        bulk.Add(self.type_all_ctrl, 0, wx.RIGHT, 4)
-        btn = wx.Button(self, label="Apply")
-        btn.Bind(wx.EVT_BUTTON, lambda e: self._apply_to_all("Product Type", self.type_all_ctrl.GetValue()))
-        bulk.Add(btn, 0, wx.RIGHT, 16)
-        bulk.Add(wx.StaticText(self, label="Brand for all:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        self._bulk_field(bulk, "Product Type for all:", self.type_all_ctrl, "Product Type")
         self.brand_all_ctrl = wx.TextCtrl(self, size=(180, -1))
-        bulk.Add(self.brand_all_ctrl, 0, wx.RIGHT, 4)
-        btn = wx.Button(self, label="Apply")
-        btn.Bind(wx.EVT_BUTTON, lambda e: self._apply_to_all("Brand", self.brand_all_ctrl.GetValue()))
-        bulk.Add(btn, 0, wx.RIGHT, 16)
+        self._bulk_field(bulk, "Brand for all:", self.brand_all_ctrl, "Brand")
         bulk.Add(wx.StaticText(self, label="Ctrl+C / Ctrl+V to copy-paste cells, Delete to clear."),
                  0, wx.ALIGN_CENTER_VERTICAL)
 
         self.log_ctrl = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2, size=(-1, 90))
 
         buttons = wx.BoxSizer(wx.HORIZONTAL)
-        btn_scan = wx.Button(self, label=" Scan 3D files")
+        btn_scan = wx.Button(self, label=f" {self.SCAN_LABEL}")
         btn_scan.SetBitmap(_icon(wx.ART_FIND), wx.LEFT)
         btn_scan.Bind(wx.EVT_BUTTON, lambda e: self.scan())
-        btn_write = wx.Button(self, label=" Write bm3 export")
+        btn_write = wx.Button(self, label=f" {self.WRITE_LABEL}")
         btn_write.SetBitmap(_icon(wx.ART_FILE_SAVE), wx.LEFT)
         btn_write.Bind(wx.EVT_BUTTON, lambda e: self.write())
         btn_close = wx.Button(self, wx.ID_CLOSE, label="Close")
@@ -1057,9 +1045,18 @@ class Bm3BuilderDialog(wx.Dialog):
 
     @staticmethod
     def _default_out_dir(src_dir):
-        # "fichier bm3_<source>" : sibling of the default bm3 folder, already
-        # covered by .gitignore.
-        return f"{MainFrame.DEFAULT_BM3_DIR}_{Path(src_dir).name}" if src_dir else ""
+        return ""
+
+    def _column_editor(self, name):
+        """Cell editor for an editable column (None: plain text)."""
+        return ProductTypeEditor() if name == "Product Type" else None
+
+    def _bulk_field(self, sizer, label, ctrl, col_name):
+        sizer.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        sizer.Add(ctrl, 0, wx.RIGHT, 4)
+        btn = wx.Button(self, label="Apply")
+        btn.Bind(wx.EVT_BUTTON, lambda e: self._apply_to_all(col_name, ctrl.GetValue()))
+        sizer.Add(btn, 0, wx.RIGHT, 16)
 
     def _path_row(self, sizer, label, ctrl):
         sizer.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -1109,34 +1106,10 @@ class Bm3BuilderDialog(wx.Dialog):
                     + (f" ({', '.join(matches[:5])}{', ...' if len(matches) > 5 else ''})" if matches else "")
                 )
             return value
-        if name == self.ROLE:
-            if text and text not in tpl.ALL_ROLES:
-                raise ValueError(f"'{text}' is not a valid role ({', '.join(tpl.ALL_ROLES)})")
-            return text
-        if name in self.DIMENSION_COLS:
-            try:
-                if float(text.replace(",", ".")) <= 0:
-                    raise ValueError
-            except ValueError:
-                raise ValueError(f"{name} must be a positive number, got '{text}'") from None
-            return text
-        if name == "Materials":
-            return ", ".join(part.strip() for part in text.split(",") if part.strip())
         return text
 
     def _after_change(self, row, col):
-        """Keeps the role in sync: a Reference change re-infers it unless it
-        was set by hand; setting the role by hand pins it (clearing it
-        hands it back to inference on the next Reference change)."""
-        name = self._col_name(col)
-        if name == "Reference" and row not in self._manual_roles:
-            role = tpl.infer_role_from_reference(self.grid.GetCellValue(row, col))
-            self.grid.SetCellValue(row, self.COL[self.ROLE], role or "")
-        elif name == self.ROLE:
-            if self.grid.GetCellValue(row, col):
-                self._manual_roles.add(row)
-            else:
-                self._manual_roles.discard(row)
+        """Hook run after a cell was changed (typed, pasted or cleared)."""
 
     def _set_cell(self, row, col, text):
         """Validates and writes one cell (paste, clear, apply to all).
@@ -1175,8 +1148,8 @@ class Bm3BuilderDialog(wx.Dialog):
         if errors:
             self.log_line(f"WARNING: {errors[0]}", "warning")
             return
-        self.log_line(f"{col_name} '{self.grid.GetCellValue(0, col) if self.products else value}' "
-                      f"applied to {self.grid.GetNumberRows()} product(s).", "load")
+        self.log_line(f"{col_name} '{self.grid.GetCellValue(0, col) if self.grid.GetNumberRows() else value}' "
+                      f"applied to {self.grid.GetNumberRows()} row(s).", "load")
 
     # ------------------------------------------------------ copy / paste --
 
@@ -1254,6 +1227,127 @@ class Bm3BuilderDialog(wx.Dialog):
 
     # ----------------------------------------------------------- actions --
 
+    def _reset_rows(self, count):
+        if self.grid.GetNumberRows():
+            self.grid.DeleteRows(0, self.grid.GetNumberRows())
+        self.grid.AppendRows(count)
+
+    def _commit_edit(self):
+        """Commits a cell still being edited, so Write sees its value."""
+        if self.grid.IsCellEditControlEnabled():
+            self.grid.SaveEditControlValue()
+            self.grid.HideCellEditControl()
+
+    def _confirm_incomplete(self, incomplete):
+        """True if nothing is missing or the user chose to write anyway."""
+        return not incomplete or wx.MessageBox(
+            "Missing values:\n" + "\n".join(incomplete) + "\n\nWrite the export anyway?",
+            "Incomplete", wx.YES_NO | wx.ICON_WARNING, self,
+        ) == wx.YES
+
+    def _output_dir(self, xlsx_name, what):
+        """Chosen output folder, or None if missing or overwrite declined."""
+        if not self.out_ctrl.GetValue().strip():
+            self._error("Choose an output folder.")
+            return None
+        out_dir = Path(self.out_ctrl.GetValue())
+        if (out_dir / xlsx_name).exists() and wx.MessageBox(
+            f"{out_dir / xlsx_name} already exists. Overwrite it (and the copied {what})?",
+            "Overwrite", wx.YES_NO | wx.ICON_WARNING, self,
+        ) != wx.YES:
+            return None
+        return out_dir
+
+    def scan(self):
+        raise NotImplementedError
+
+    def write(self):
+        raise NotImplementedError
+
+
+class Bm3BuilderDialog(_BuilderDialog):
+    """Builds a bm3 export (one folder per product + export-products-bm3.xlsx)
+    from a flat folder of .BM3 files. Dimensions and materials come from the
+    3D files but stay editable; Reference/Brand are typed in, Product Type is
+    picked from the program's fixed list (bm3_builder.PRODUCT_TYPES), and the
+    role is inferred from the Reference unless set by hand. All file logic
+    lives in bma_generator.bm3_builder."""
+
+    TITLE = "Build bm3 from 3D files"
+    DEFAULT_SRC_DIR = "test_bm3"
+    SRC_LABEL = "3D files folder:"
+    OUT_LABEL = "Output bm3 folder:"
+    SCAN_LABEL = "Scan 3D files"
+    WRITE_LABEL = "Write bm3 export"
+
+    COLUMNS = [
+        # (header, width, editable)
+        ("Product ID", 110, False),
+        ("Reference", 220, True),
+        ("Role (auto / manual)", 150, True),
+        ("Product Type", 220, True),
+        ("Brand", 140, True),
+        ("Category ID", 100, True),
+        ("Width", 80, True),
+        ("Depth", 80, True),
+        ("Height", 80, True),
+        ("Materials", 130, True),
+        ("3D files", 80, False),
+        ("Thumbnail", 100, False),
+    ]
+    ROLE = "Role (auto / manual)"
+    DIMENSION_COLS = {"Width": "width", "Depth": "depth", "Height": "height"}
+
+    def __init__(self, parent, roles_path):
+        self.products = []
+        self.roles_path = roles_path
+        self._manual_roles = set()  # rows whose role was set by hand
+        self._measured = {}  # (row, col) -> (displayed text, exact value)
+        super().__init__(parent)
+
+    @staticmethod
+    def _default_out_dir(src_dir):
+        # "fichier bm3_<source>" : sibling of the default bm3 folder, already
+        # covered by .gitignore.
+        return f"{MainFrame.DEFAULT_BM3_DIR}_{Path(src_dir).name}" if src_dir else ""
+
+    def _column_editor(self, name):
+        if name == self.ROLE:
+            return wx.grid.GridCellChoiceEditor(ROLE_VALUES, allowOthers=False)
+        return super()._column_editor(name)
+
+    def _normalize(self, col, text):
+        name = self._col_name(col)
+        text = (text or "").strip()
+        if name == self.ROLE:
+            if text and text not in tpl.ALL_ROLES:
+                raise ValueError(f"'{text}' is not a valid role ({', '.join(tpl.ALL_ROLES)})")
+            return text
+        if name in self.DIMENSION_COLS:
+            try:
+                if float(text.replace(",", ".")) <= 0:
+                    raise ValueError
+            except ValueError:
+                raise ValueError(f"{name} must be a positive number, got '{text}'") from None
+            return text
+        if name == "Materials":
+            return ", ".join(part.strip() for part in text.split(",") if part.strip())
+        return super()._normalize(col, text)
+
+    def _after_change(self, row, col):
+        """Keeps the role in sync: a Reference change re-infers it unless it
+        was set by hand; setting the role by hand pins it (clearing it
+        hands it back to inference on the next Reference change)."""
+        name = self._col_name(col)
+        if name == "Reference" and row not in self._manual_roles:
+            role = tpl.infer_role_from_reference(self.grid.GetCellValue(row, col))
+            self.grid.SetCellValue(row, self.COL[self.ROLE], role or "")
+        elif name == self.ROLE:
+            if self.grid.GetCellValue(row, col):
+                self._manual_roles.add(row)
+            else:
+                self._manual_roles.discard(row)
+
     def scan(self):
         warnings = []
         try:
@@ -1264,12 +1358,11 @@ class Bm3BuilderDialog(wx.Dialog):
 
         self._manual_roles.clear()
         self._measured.clear()
-        if self.grid.GetNumberRows():
-            self.grid.DeleteRows(0, self.grid.GetNumberRows())
-        self.grid.AppendRows(len(self.products))
+        self._reset_rows(len(self.products))
         for row, p in enumerate(self.products):
             values = {
                 "Product ID": p.product_id,
+                "Category ID": p.category,
                 "Materials": ", ".join(p.publications),
                 "3D files": ", ".join(lod for lod in bm3_builder.LODS if lod in p.files),
                 "Thumbnail": p.thumbnail.name if p.thumbnail else "-",
@@ -1295,6 +1388,7 @@ class Bm3BuilderDialog(wx.Dialog):
             p.role = cell(self.ROLE)
             p.product_type = cell("Product Type")
             p.brand = cell("Brand")
+            p.category = cell("Category ID")
             p.publications = [m.strip() for m in cell("Materials").split(",") if m.strip()]
             for name, attr in self.DIMENSION_COLS.items():
                 text = cell(name)
@@ -1305,29 +1399,17 @@ class Bm3BuilderDialog(wx.Dialog):
         if not self.products:
             wx.MessageBox("Scan the 3D files first.", "Warning", wx.OK | wx.ICON_WARNING, self)
             return
-        if self.grid.IsCellEditControlEnabled():
-            self.grid.SaveEditControlValue()
-            self.grid.HideCellEditControl()
+        self._commit_edit()
         self._collect()
 
         incomplete = [
-            f"{p.product_id} ({', '.join(n for n, v in (('Reference', p.reference), ('Role', p.role), ('Product Type', p.product_type)) if not v)})"
-            for p in self.products if not (p.reference and p.role and p.product_type)
+            f"{p.product_id} ({', '.join(n for n, v in (('Reference', p.reference), ('Role', p.role), ('Product Type', p.product_type), ('Category ID', p.category)) if not v)})"
+            for p in self.products if not (p.reference and p.role and p.product_type and p.category)
         ]
-        if incomplete and wx.MessageBox(
-            "Missing values:\n" + "\n".join(incomplete) + "\n\nWrite the export anyway?",
-            "Incomplete", wx.YES_NO | wx.ICON_WARNING, self,
-        ) != wx.YES:
+        if not self._confirm_incomplete(incomplete):
             return
-
-        if not self.out_ctrl.GetValue().strip():
-            self._error("Choose an output bm3 folder.")
-            return
-        out_dir = Path(self.out_ctrl.GetValue())
-        if (out_dir / bm3_builder.BM3_XLSX_NAME).exists() and wx.MessageBox(
-            f"{out_dir / bm3_builder.BM3_XLSX_NAME} already exists. Overwrite it (and the copied 3D files)?",
-            "Overwrite", wx.YES_NO | wx.ICON_WARNING, self,
-        ) != wx.YES:
+        out_dir = self._output_dir(bm3_builder.BM3_XLSX_NAME, "3D files")
+        if out_dir is None:
             return
 
         try:
@@ -1343,6 +1425,105 @@ class Bm3BuilderDialog(wx.Dialog):
             return
 
         self.log_line(f"bm3 Excel written: {out_xlsx}; roles saved to {self.roles_path}", "generated")
+        self.written_dir = out_dir
+        self.EndModal(wx.ID_OK)
+
+
+class MaterialBuilderDialog(_BuilderDialog):
+    """Builds a material export (one folder per material + export-products.xlsx,
+    with Category ID = Material) from a flat folder of .BM3MAT files. The MQ
+    is a copy of the source file, the LQ and the thumbnail are derived from
+    its textures unless supplied (<ID>_LQ.BM3MAT, <ID>.jpg). Reference,
+    Brand and Name are typed in, Product Type defaults to Textile. All file
+    logic lives in bma_generator.bm3mat_builder."""
+
+    TITLE = "Build materials from .BM3MAT files"
+    DEFAULT_SRC_DIR = "fichier bm3mat/aFaire"
+    SRC_LABEL = ".BM3MAT files folder:"
+    OUT_LABEL = "Output materials folder:"
+    SCAN_LABEL = "Scan .BM3MAT files"
+    WRITE_LABEL = "Write materials export"
+
+    COLUMNS = [
+        # (header, width, editable)
+        ("Product ID", 110, False),
+        ("Reference", 220, True),
+        ("Product Type", 200, True),
+        ("Brand", 140, True),
+        ("Category ID", 100, True),
+        ("Name (en-GB)", 160, True),
+        ("Textures", 70, False),
+        ("Files", 80, False),
+        ("Thumbnail", 130, False),
+    ]
+
+    def __init__(self, parent):
+        self.materials = []
+        super().__init__(parent)
+
+    @staticmethod
+    def _default_out_dir(src_dir):
+        # "fichier bm3mat_<source>", covered by .gitignore.
+        return f"fichier bm3mat_{Path(src_dir).name}" if src_dir else ""
+
+    def scan(self):
+        warnings = []
+        try:
+            self.materials = bm3mat_builder.scan_material_folder(self.src_ctrl.GetValue(), log=warnings.append)
+        except Exception as exc:
+            self._error(f"Unable to read the .BM3MAT files:\n{exc}")
+            return
+
+        self._reset_rows(len(self.materials))
+        for row, m in enumerate(self.materials):
+            values = {
+                "Product ID": m.product_id,
+                "Product Type": m.product_type,
+                "Category ID": m.category,
+                "Textures": str(m.texture_count),
+                "Files": ", ".join(lod for lod in bm3_builder.LODS if lod in m.files),
+                "Thumbnail": m.thumbnail.name if m.thumbnail else "(from texture)",
+            }
+            for name, value in values.items():
+                self.grid.SetCellValue(row, self.COL[name], value)
+
+        self.log_line(f"{len(self.materials)} material(s) read from {self.src_ctrl.GetValue()}.", "load")
+        for warning in warnings:
+            self.log_line(f"WARNING: {warning}", "warning")
+
+    def write(self):
+        if not self.materials:
+            wx.MessageBox("Scan the .BM3MAT files first.", "Warning", wx.OK | wx.ICON_WARNING, self)
+            return
+        self._commit_edit()
+        for row, m in enumerate(self.materials):
+            cell = lambda name: self.grid.GetCellValue(row, self.COL[name]).strip()
+            m.reference = cell("Reference")
+            m.product_type = cell("Product Type")
+            m.brand = cell("Brand")
+            m.category = cell("Category ID")
+            m.name = cell("Name (en-GB)")
+
+        incomplete = [
+            f"{m.product_id} ({', '.join(n for n, v in (('Reference', m.reference), ('Product Type', m.product_type), ('Category ID', m.category)) if not v)})"
+            for m in self.materials if not (m.reference and m.product_type and m.category)
+        ]
+        if not self._confirm_incomplete(incomplete):
+            return
+        out_dir = self._output_dir(bm3mat_builder.MAT_XLSX_NAME, "material files")
+        if out_dir is None:
+            return
+
+        try:
+            with wx.BusyCursor():
+                out_xlsx = bm3mat_builder.write_material_export(
+                    self.materials, out_dir, log=lambda m: self.log_line(m, "load")
+                )
+        except Exception as exc:
+            self._error(f"Writing the materials export failed:\n{exc}")
+            return
+
+        self.log_line(f"Materials Excel written: {out_xlsx}", "generated")
         self.written_dir = out_dir
         self.EndModal(wx.ID_OK)
 

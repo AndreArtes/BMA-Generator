@@ -22,6 +22,12 @@ Command-line usage:
            dimensions read from the .BM3 files) from a flat folder of .BM3
            files. Reference is left empty (fill it in the GUI or the Excel).
 
+    python main.py build-materials --src-dir "fichier bm3mat/aFaire" --out-dir "fichier bm3mat_aFaire"
+        -> builds a material export (one folder per material with HQ/MQ/LQ
+           .BM3MAT + thumbnail, and an Excel with Category ID = Material)
+           from a flat folder of .BM3MAT files. Reference and Name are left
+           empty (fill them in the GUI or the Excel).
+
 Valid roles: see bma_generator.templates.ALL_ROLES. The roles file also has
 an "Anchors" sheet where anchor tags, compatibilities (receive tags) and the
 135-degree corner angle can be edited; generation uses it.
@@ -31,7 +37,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from bma_generator import bm3_builder, excel_io, generator, templates as tpl
+from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, templates as tpl
 
 
 def find_bm3_xlsx(bm3_dir):
@@ -104,6 +110,20 @@ def cmd_build_bm3(args):
     print(f"bm3 Excel written: {out_xlsx} ({len(products)} product(s); fill in the Reference column).")
 
 
+def cmd_build_materials(args):
+    materials = bm3mat_builder.scan_material_folder(args.src_dir, log=lambda msg: print(f"WARNING: {msg}"))
+    product_type = bm3mat_builder.DEFAULT_PRODUCT_TYPE
+    if args.product_type:
+        product_type = bm3_builder.resolve_product_type(args.product_type)
+        if product_type is None:
+            raise ValueError(f"Unknown or ambiguous Product Type: {args.product_type!r}")
+    for m in materials:
+        m.product_type = product_type
+        m.brand = args.brand or ""
+    out_xlsx = bm3mat_builder.write_material_export(materials, args.out_dir, log=print)
+    print(f"Materials Excel written: {out_xlsx} ({len(materials)} material(s); fill in Reference and Name).")
+
+
 def run_interactive():
     print("=== BMA Generator ===")
     bm3_dir = input("bm3 folder [fichier bm3]: ").strip() or "fichier bm3"
@@ -142,6 +162,14 @@ def main():
     p_build.add_argument("--product-type", default=None, help="Product Type for every product (e.g. '381+Outdoor sofas').")
     p_build.add_argument("--brand", default=None, help="Brand for every product.")
     p_build.set_defaults(func=cmd_build_bm3)
+
+    p_mat = sub.add_parser("build-materials", help="Builds a material export from a flat folder of .BM3MAT files.")
+    p_mat.add_argument("--src-dir", required=True, help="Folder containing the .BM3MAT files (<ID>.BM3MAT).")
+    p_mat.add_argument("--out-dir", required=True)
+    p_mat.add_argument("--product-type", default=None,
+                       help=f"Product Type for every material (default: '{bm3mat_builder.DEFAULT_PRODUCT_TYPE}').")
+    p_mat.add_argument("--brand", default=None, help="Brand for every material.")
+    p_mat.set_defaults(func=cmd_build_materials)
 
     args = parser.parse_args()
     if not getattr(args, "command", None):

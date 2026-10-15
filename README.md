@@ -33,4 +33,14 @@ install required, just run `BMA Generator.exe`.
    files + thumbnail) plus a companion output Excel catalog, ready to
    import into the target 3D configurator.
 
+Two upstream helpers prepare the inputs from raw 3D files (buttons in the
+GUI, or `main.py build-bm3` / `main.py build-materials`):
+
+- **Build bm3 from 3D files** -- a flat folder of `.BM3` models becomes a
+  bm3 export (dimensions read from the models).
+- **Build materials** -- a flat folder of `.BM3MAT` materials becomes a
+  material export: one folder per material with HQ/MQ/LQ files (the LQ
+  with reduced textures) and a thumbnail, plus an `export-products.xlsx`
+  where every row has `Category ID` = `Material`.
+
 See `CLAUDE.md` for architecture details.
