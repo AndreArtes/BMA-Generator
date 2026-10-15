@@ -16,6 +16,9 @@ Command-line usage:
 
     python main.py generate --bm3-dir "fichier bm3" --roles roles.xlsx --out-dir "fichier bma"
         -> generates the .BMA files + the output Excel in --out-dir.
+           --material-values structureColor=ID+ID+... sets the materials a
+           material parameter offers (Default = first ID) instead of "null";
+           build-bm3 accepts the same option.
 
     python main.py build-bm3 --src-dir test_bm3 --out-dir "fichier bm3_test"
         -> builds a bm3 export (one folder per product + Excel with the
@@ -37,7 +40,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, templates as tpl
+from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, material_values, templates as tpl
+
+
+MATERIAL_VALUES_HELP = (
+    "Materials offered by a material parameter, e.g. structureColor=b9lSah_1+b9lSah_2 "
+    "(first ID = Default; repeat the option for each parameter)."
+)
 
 
 def find_bm3_xlsx(bm3_dir):
@@ -79,6 +88,7 @@ def cmd_generate(args):
     generated, skipped, rows_products, rows_assets, rows_parameters, warnings, products_header = generator.generate(
         products, roles, args.bm3_dir, args.out_dir, brand_override=getattr(args, "brand", None),
         anchor_overrides=anchor_overrides,
+        material_values=material_values.parse(getattr(args, "material_values", None)),
     )
 
     if rows_products:
@@ -106,7 +116,9 @@ def cmd_build_bm3(args):
         p.product_type = product_type
         p.brand = args.brand or ""
         print(f"{p.product_id}: W {p.width:.2f}  D {p.depth:.2f}  H {p.height:.2f}  ({', '.join(p.files)})")
-    out_xlsx = bm3_builder.write_bm3_export(products, args.out_dir, log=print)
+    out_xlsx = bm3_builder.write_bm3_export(
+        products, args.out_dir, log=print, material_values=material_values.parse(args.material_values)
+    )
     print(f"bm3 Excel written: {out_xlsx} ({len(products)} product(s); fill in the Reference column).")
 
 
@@ -154,6 +166,7 @@ def main():
     p_gen.add_argument("--roles", default="roles.xlsx")
     p_gen.add_argument("--out-dir", default="fichier bma")
     p_gen.add_argument("--brand", default=None, help="Fallback value for the Brand column if missing from the bm3 source.")
+    p_gen.add_argument("--material-values", action="append", metavar="PARAM=ID+ID+...", help=MATERIAL_VALUES_HELP)
     p_gen.set_defaults(func=cmd_generate)
 
     p_build = sub.add_parser("build-bm3", help="Builds a bm3 export from a flat folder of .BM3 files.")
@@ -161,6 +174,7 @@ def main():
     p_build.add_argument("--out-dir", required=True)
     p_build.add_argument("--product-type", default=None, help="Product Type for every product (e.g. '381+Outdoor sofas').")
     p_build.add_argument("--brand", default=None, help="Brand for every product.")
+    p_build.add_argument("--material-values", action="append", metavar="PARAM=ID+ID+...", help=MATERIAL_VALUES_HELP)
     p_build.set_defaults(func=cmd_build_bm3)
 
     p_mat = sub.add_parser("build-materials", help="Builds a material export from a flat folder of .BM3MAT files.")

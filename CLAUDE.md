@@ -9,8 +9,8 @@ pip install -r requirements.txt   # openpyxl, wxPython
 python gui.py                     # GUI (wxPython) - primary interface
 python main.py                    # CLI, guided mode (prompts for paths)
 python main.py init-roles --bm3-dir "fichier bm3" --roles roles.xlsx
-python main.py generate --bm3-dir "fichier bm3" --roles roles.xlsx --out-dir "fichier bma" [--brand NAME]
-python main.py build-bm3 --src-dir test_bm3 --out-dir "fichier bm3_test" [--product-type T] [--brand B]
+python main.py generate --bm3-dir "fichier bm3" --roles roles.xlsx --out-dir "fichier bma" [--brand NAME] [--material-values structureColor=ID+ID]
+python main.py build-bm3 --src-dir test_bm3 --out-dir "fichier bm3_test" [--product-type T] [--brand B] [--material-values structureColor=ID+ID]
 python main.py build-materials --src-dir "fichier bm3mat/aFaire" --out-dir "fichier bm3mat_aFaire" [--product-type T] [--brand B]
 ```
 
@@ -69,6 +69,8 @@ Every role except the two purely-frontal ones (`pouf_frontal`, `table_frontal`) 
 Only bm3 parameters of `Type == "Product"` (material/product references, e.g. `structureColor`/`sofaColor`) are redeclared as top-level `parameters` and overloaded onto both the `MonModule` and `Package` components. Numeric dimensions (`width`/`height`/`depth`) are **not** redeclared — a validated reference `.bma` confirmed real exports omit them; relations reference `MonModule.width` etc. directly via `componentDependencies` instead. Don't reintroduce blanket numeric-parameter passthrough without checking against a real exported file first — this has flip-flopped once already. `extra_parameters` in `generator.build_bma_json` is the escape hatch for genuinely assembly-level synthetic values (currently only `profondeurModuleAttache`).
 
 In the output Excel's Parameters sheet, a `Product`-type parameter coming from the bm3 source (material/product overloads like `structureColor`/`sofaColor`) gets the literal string `"null"` (not an empty cell) for Default/Values and `"true"` for Allow any value — those are customer choices resolved dynamically by the configurator, not fixed at export time. The `module` and `package` rows are also `Product`-typed but are administrative, not customer-facing: they must keep their real Default/Values (`product.product_id` / `<product_id>_p`), so `generator._output_row` takes a `dynamic=True` flag (default) that only those two call sites set to `False` to opt out of the null-ing behavior.
+
+**Material values (exception to the null rule).** The user can pick, per material parameter, which materials of a material export it offers (`bma_generator/material_values.py`: `{param_id: (default_id, [ids])}`, chosen in `gui.MaterialValuesDialog` from the "Material values..." buttons of the main window and of the Build bm3 window, or `--material-values PARAM=ID+ID+...` on the CLI). A parameter with chosen materials is written like a real HomeByMe bm3 export (`fichier bm3`: `Edrien_mat1`/`Edrien_mat1`/`false`): Default = one ID, Values = IDs joined with `+`, Allow any value = `"false"` — in the built bm3 Excel and in the bma output Excel (`dynamic=False` for that row). Parameters without a choice keep the null rule. Deliberately, BMA generation does **not** read these values back from the bm3 Excel (a HomeByMe bm3 already carries values the validated bma output nulls); the choice is passed explicitly, and the main window carries over what was chosen in the Build bm3 window when the user loads that export. The `.BMA` JSON is unchanged (still declares the parameter without a value).
 
 ### ID prefixing (`gui.apply_prefix`)
 

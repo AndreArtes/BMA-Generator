@@ -43,4 +43,10 @@ GUI, or `main.py build-bm3` / `main.py build-materials`):
   with reduced textures) and a thumbnail, plus an `export-products.xlsx`
   where every row has `Category ID` = `Material`.
 
+**Material values...** (main window and Build bm3 window) then lets you
+tick, for a material parameter such as `structureColor`, which materials
+of that export the customer can choose and which one is the default; they
+are written to the Parameters sheet as `Default` = one ID and `Values` =
+the IDs joined with `+` (e.g. `b9lSah_1+b9lSah_2+b9lSah_3`).
+
 See `CLAUDE.md` for architecture details.

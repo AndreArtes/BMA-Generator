@@ -8,6 +8,7 @@ from pathlib import Path
 
 import openpyxl
 
+from . import material_values as mv
 from . import templates as tpl
 
 PACKAGE_SUFFIX = "_p"
@@ -214,7 +215,8 @@ def find_reference_depth(product, role, roles_by_id, products_by_id, anchor_over
     return depths[0], warnings
 
 
-def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_overrides=None):
+def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_overrides=None,
+             material_values=None):
     """Genere l'arborescence fichier bma/ pour tous les produits ayant un role.
 
     `roles` : dict {product_id: role} ou {product_id: {"role":.., "ref_depth":..}}.
@@ -222,6 +224,9 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
     (prioritaire) ; sinon la valeur du bm3 est conservee.
     `anchor_overrides` : templates.AnchorOverrides (feuille Anchors du
     fichier de roles), ou None pour les tags/compatibilites par defaut.
+    `material_values` : materiaux proposes par parametre materiau (voir
+    material_values.py) ; un parametre qui y figure recoit ces Default/
+    Values et Allow any value "false" au lieu de la regle "null".
 
     Retourne (generated, skipped, rows_products, rows_assets, rows_parameters,
     warnings, products_header).
@@ -357,14 +362,21 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
         for param in product.parameters:
             if param.get("type") != PRODUCT_PARAM_TYPE:
                 continue
+            # Materiaux choisis par l'utilisateur pour ce parametre : ils
+            # remplacent la regle "null" (choix libre du client).
+            chosen = mv.cells(material_values, param["id"])
+            default, values, allow_any_value = (
+                (*chosen, mv.ALLOW_ANY_VALUE) if chosen
+                else (param.get("default"), param.get("values"), param.get("allow_any_value"))
+            )
             rows_parameters.append(
                 _output_row(
                     assembly_id, param["id"], param.get("type"), param.get("translation_key"),
-                    param.get("editable"), param.get("default"), param.get("values"),
-                    param.get("allow_any_value"), param.get("value_translation_key"),
+                    param.get("editable"), default, values,
+                    allow_any_value, param.get("value_translation_key"),
                     param.get("magnitude"), param.get("tags"), param.get("free_tags"),
                     param.get("step"), param.get("index_ui"), param.get("in_or_out"),
-                    param.get("visibility"), param.get("force"),
+                    param.get("visibility"), param.get("force"), dynamic=not chosen,
                 )
             )
         rows_parameters.extend(extra_output_rows)

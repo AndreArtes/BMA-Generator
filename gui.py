@@ -16,7 +16,7 @@ from pathlib import Path
 import wx
 import wx.grid
 
-from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator
+from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, material_values
 from bma_generator import templates as tpl
 
 ROLE_VALUES = [""] + tpl.ALL_ROLES
@@ -53,6 +53,29 @@ def _dialog_start_dir(value):
     while not path.is_dir() and path != path.parent:
         path = path.parent
     return str(path)
+
+
+def _latest_material_export():
+    """Most recently modified "fichier bm3mat_*" folder (default output of
+    the materials window), or "" if there is none."""
+    folders = [p for p in Path(".").glob("fichier bm3mat_*") if p.is_dir()]
+    return str(max(folders, key=lambda p: p.stat().st_mtime)) if folders else ""
+
+
+def _choose_material_values(parent, param_ids, values, export_path):
+    """Opens MaterialValuesDialog; returns (values, export_path), or None if
+    cancelled or there is no material parameter to fill."""
+    if not param_ids:
+        wx.MessageBox("None of these products has a material parameter (Product-type, e.g. structureColor).",
+                      "Material values", wx.OK | wx.ICON_INFORMATION, parent)
+        return None
+    dlg = MaterialValuesDialog(parent, param_ids, values, export_path)
+    try:
+        if dlg.ShowModal() != wx.ID_OK:
+            return None
+        return dlg.values, dlg.export_path
+    finally:
+        dlg.Destroy()
 
 
 def _icon(art_id, size=ICON_SIZE):
@@ -276,6 +299,11 @@ class MainFrame(wx.Frame):
         self.products = []  # liste de Bm3Product, dans l'ordre des lignes de la grille
         self.dynamic_headers = []  # colonnes bm3 affichees a partir de la colonne FROZEN_COLS
         self.original_bm3_dir = None  # dossier bm3 source, fixe au chargement
+        # Materiaux proposes par parametre materiau pour la generation .BMA
+        # ({param: (default, [ids])}, voir material_values) et l'export de
+        # materiaux d'ou ils viennent.
+        self.material_values = {}
+        self.material_export_dir = _latest_material_export()
 
         panel = wx.Panel(self)
         root_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -405,7 +433,8 @@ class MainFrame(wx.Frame):
         row2.Add(self.brand_override_ctrl, 0, wx.RIGHT, 6)
         btn_brand = wx.Button(parent, label="Add brand")
         btn_brand.Bind(wx.EVT_BUTTON, lambda e: self.apply_brand())
-        row2.Add(btn_brand, 0)
+        row2.Add(btn_brand, 0, wx.RIGHT, 16)
+        row2.Add(self._icon_button(parent, wx.ART_LIST_VIEW, "Material values...", self.choose_material_values), 0)
 
         box.Add(row1, 0, wx.BOTTOM, 6)
         box.Add(row2, 0)
@@ -505,8 +534,9 @@ class MainFrame(wx.Frame):
         self.roles_path = self.DEFAULT_ROLES_PATH
         self.id_prefix = ""
         self.brand_override = ""
+        self.material_values = {}
 
-        self.log_line("Reset: paths, table, prefix and Brand cleared.", "load")
+        self.log_line("Reset: paths, table, prefix, Brand and material values cleared.", "load")
 
     def _rebuild_grid_columns(self, headers):
         """Rebuilds the whole grid: frozen columns (Role, Reference depth)
@@ -775,6 +805,7 @@ class MainFrame(wx.Frame):
             bm3_xlsx = _find_bm3_xlsx(self.bm3_dir)
             generated, skipped, rows_products, rows_assets, rows_parameters, warnings, products_header = generator.generate(
                 self.products, roles, self.bm3_dir, self.out_dir, anchor_overrides=anchor_overrides,
+                material_values=self.material_values,
             )
             if rows_products:
                 out_xlsx = Path(self.out_dir) / "export-products-bma.xlsx"
@@ -787,6 +818,7 @@ class MainFrame(wx.Frame):
             return
 
         self.log_line(f"Generated: {', '.join(generated) or '-'}", "generated")
+        self.log_line(f"Material values: {material_values.describe(self.material_values)}", "load")
         if skipped:
             self.log_line(f"Skipped (missing role): {', '.join(skipped)}", "warning")
         for warning in warnings:
@@ -798,12 +830,31 @@ class MainFrame(wx.Frame):
             "Done", wx.OK | wx.ICON_INFORMATION,
         )
 
+    def choose_material_values(self):
+        """Picks the materials offered by each material parameter of the
+        loaded products; applied at the next "Generate .BMA"."""
+        if not self.products:
+            wx.MessageBox("Load the products first (button 1).", "Warning", wx.OK | wx.ICON_WARNING)
+            return
+        param_ids = list(dict.fromkeys(
+            param["id"] for p in self.products for param in p.parameters
+            if param.get("type") == generator.PRODUCT_PARAM_TYPE
+        ))
+        result = _choose_material_values(self, param_ids, self.material_values, self.material_export_dir)
+        if result is None:
+            return
+        self.material_values, self.material_export_dir = result
+        self.log_line(f"Material values for the .BMA: {material_values.describe(self.material_values)}", "load")
+
     def open_bm3_builder(self):
         """Opens the "3D files -> bm3 export" window. If it writes an
-        export, offers to load it right away as the current bm3 folder."""
-        dlg = Bm3BuilderDialog(self, self.roles_path)
+        export, offers to load it right away as the current bm3 folder
+        (with the material values chosen there, for the .BMA too)."""
+        dlg = Bm3BuilderDialog(self, self.roles_path, self.material_values, self.material_export_dir)
         dlg.ShowModal()
         written_dir = dlg.written_dir
+        self.material_export_dir = dlg.material_export_dir
+        chosen_values = dlg.material_values
         dlg.Destroy()
         if written_dir is None:
             return
@@ -813,6 +864,11 @@ class MainFrame(wx.Frame):
         ) == wx.YES:
             self.bm3_dir = str(written_dir)
             self.load_products()
+            self.material_values = chosen_values
+            if chosen_values:
+                self.log_line(
+                    f"Material values for the .BMA: {material_values.describe(chosen_values)}", "load"
+                )
 
     def open_material_builder(self):
         """Opens the ".BM3MAT files -> material export" window. Materials
@@ -822,7 +878,151 @@ class MainFrame(wx.Frame):
         written_dir = dlg.written_dir
         dlg.Destroy()
         if written_dir is not None:
+            self.material_export_dir = str(written_dir)
             self.log_line(f"Materials export written to {written_dir}", "generated")
+
+
+class MaterialValuesDialog(wx.Dialog):
+    """Chooses, for each material parameter of the products (Product-type
+    parameters such as structureColor), which materials of a material export
+    it offers (ticked = written to Values, joined with "+") and which one is
+    the Default. Used before writing a bm3 export and before generating the
+    .BMA files. Result: self.values = {param_id: (default_id, [ids])}, see
+    bma_generator.material_values."""
+
+    NOT_IN_EXPORT = "(not in this export)"
+
+    def __init__(self, parent, param_ids, values, export_path):
+        super().__init__(parent, title="Material values",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.param_ids = list(param_ids)
+        self.values = {p: (d, list(ids)) for p, (d, ids) in (values or {}).items()}
+        self._materials = []  # [(id, reference, name)] of the loaded export
+        self._param = None  # parameter currently shown
+
+        self.path_ctrl = wx.TextCtrl(self, value=export_path or "")
+        btn_browse = wx.Button(self, label="Browse...")
+        btn_browse.Bind(wx.EVT_BUTTON, self._browse)
+        btn_load = wx.Button(self, label="Load")
+        btn_load.Bind(wx.EVT_BUTTON, lambda e: self._load_export())
+        path_row = wx.BoxSizer(wx.HORIZONTAL)
+        path_row.Add(wx.StaticText(self, label="Materials export:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        path_row.Add(self.path_ctrl, 1, wx.RIGHT, 6)
+        path_row.Add(btn_browse, 0, wx.RIGHT, 4)
+        path_row.Add(btn_load, 0)
+
+        self.param_ctrl = wx.Choice(self, choices=self.param_ids)
+        self.param_ctrl.Bind(wx.EVT_CHOICE, lambda e: self._show_param(self.param_ctrl.GetStringSelection()))
+        param_row = wx.BoxSizer(wx.HORIZONTAL)
+        param_row.Add(wx.StaticText(self, label="Parameter:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        param_row.Add(self.param_ctrl, 0)
+
+        self.list_ctrl = wx.CheckListBox(self, size=(-1, 260))
+        self.list_ctrl.Bind(wx.EVT_CHECKLISTBOX, lambda e: self._refresh_default())
+
+        select_row = wx.BoxSizer(wx.HORIZONTAL)
+        for label, checked in (("Select all", True), ("Select none", False)):
+            btn = wx.Button(self, label=label)
+            btn.Bind(wx.EVT_BUTTON, lambda e, c=checked: self._check_all(c))
+            select_row.Add(btn, 0, wx.RIGHT, 6)
+        select_row.AddSpacer(16)
+        select_row.Add(wx.StaticText(self, label="Default:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        self.default_ctrl = wx.Choice(self, size=(200, -1))
+        self.default_ctrl.Bind(wx.EVT_CHOICE, lambda e: self._update_preview())
+        select_row.Add(self.default_ctrl, 0)
+
+        self.preview = wx.StaticText(self, label="")
+
+        root = wx.BoxSizer(wx.VERTICAL)
+        root.Add(path_row, 0, wx.EXPAND | wx.ALL, 8)
+        root.Add(param_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        root.Add(self.list_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        root.Add(select_row, 0, wx.ALL, 8)
+        root.Add(self.preview, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        root.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.EXPAND | wx.ALL, 8)
+        self.SetSizer(root)
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        self.SetSize((620, 520))
+        self.CentreOnParent()
+
+        if self.path_ctrl.GetValue() and Path(self.path_ctrl.GetValue()).exists():
+            self._load_export(quiet=True)
+        if self.param_ids:
+            self.param_ctrl.SetSelection(0)
+            self._show_param(self.param_ids[0])
+
+    @property
+    def export_path(self):
+        return self.path_ctrl.GetValue().strip()
+
+    def _browse(self, _event):
+        dlg = wx.DirDialog(self, "Choose a materials export folder",
+                           defaultPath=_dialog_start_dir(self.path_ctrl.GetValue()))
+        if dlg.ShowModal() == wx.ID_OK:
+            self.path_ctrl.SetValue(dlg.GetPath())
+            self._load_export()
+        dlg.Destroy()
+
+    def _load_export(self, quiet=False):
+        try:
+            self._materials = material_values.read_material_export(self.export_path)
+        except Exception as exc:
+            self._materials = []
+            if not quiet:
+                wx.MessageBox(f"Unable to read the materials export:\n{exc}", "Error", wx.OK | wx.ICON_ERROR, self)
+        if self._param:
+            self._show_param(self._param, save=True)
+
+    def _save_param(self):
+        if not self._param:
+            return
+        ids = [self._item_ids[i] for i in self.list_ctrl.GetCheckedItems()]
+        default = self.default_ctrl.GetStringSelection()
+        if ids:
+            self.values[self._param] = (default if default in ids else ids[0], ids)
+        else:
+            self.values.pop(self._param, None)
+
+    def _show_param(self, param, save=True):
+        if save:
+            self._save_param()
+        self._param = param
+        default, chosen = self.values.get(param, (None, []))
+        known = {m[0] for m in self._materials}
+        # Materials chosen earlier but absent from the loaded export stay
+        # listed (and ticked) so reopening the window never drops them.
+        items = list(self._materials) + [(i, self.NOT_IN_EXPORT, "") for i in chosen if i not in known]
+        self._item_ids = [i for i, _r, _n in items]
+        self.list_ctrl.Set([
+            f"{i}  -  {ref}" + (f"  ({name})" if name else "") if ref or name else i for i, ref, name in items
+        ])
+        self.list_ctrl.SetCheckedItems([self._item_ids.index(i) for i in chosen if i in self._item_ids])
+        self._refresh_default(default)
+
+    def _check_all(self, checked):
+        self.list_ctrl.SetCheckedItems(list(range(self.list_ctrl.GetCount())) if checked else [])
+        self._refresh_default()
+
+    def _refresh_default(self, wanted=None):
+        ids = [self._item_ids[i] for i in self.list_ctrl.GetCheckedItems()]
+        wanted = wanted or self.default_ctrl.GetStringSelection()
+        self.default_ctrl.Set(ids)
+        if ids:
+            self.default_ctrl.SetSelection(ids.index(wanted) if wanted in ids else 0)
+        self._update_preview()
+
+    def _update_preview(self):
+        ids = [self._item_ids[i] for i in self.list_ctrl.GetCheckedItems()]
+        self.preview.SetLabel(
+            f"Default: {self.default_ctrl.GetStringSelection()}    Values: {material_values.SEPARATOR.join(ids)}"
+            if ids else "No material ticked: Default/Values stay \"null\" (free choice in the configurator)."
+        )
+        self.preview.Wrap(self.GetClientSize().width - 16)
+        self.Layout()
+
+    def _on_ok(self, event):
+        self._save_param()
+        event.Skip()
 
 
 class ProductTypeEditor(wx.grid.GridCellEditor):
@@ -1027,6 +1227,7 @@ class _BuilderDialog(wx.Dialog):
         btn_close = wx.Button(self, wx.ID_CLOSE, label="Close")
         btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
         buttons.Add(btn_scan, 0, wx.RIGHT, 6)
+        self._add_extra_buttons(buttons)
         buttons.Add(btn_write, 0, wx.RIGHT, 6)
         buttons.AddStretchSpacer()
         buttons.Add(btn_close, 0)
@@ -1046,6 +1247,9 @@ class _BuilderDialog(wx.Dialog):
     @staticmethod
     def _default_out_dir(src_dir):
         return ""
+
+    def _add_extra_buttons(self, sizer):
+        """Hook: buttons placed between Scan and Write."""
 
     def _column_editor(self, name):
         """Cell editor for an editable column (None: plain text)."""
@@ -1298,12 +1502,35 @@ class Bm3BuilderDialog(_BuilderDialog):
     ROLE = "Role (auto / manual)"
     DIMENSION_COLS = {"Width": "width", "Depth": "depth", "Height": "height"}
 
-    def __init__(self, parent, roles_path):
+    def __init__(self, parent, roles_path, material_values=None, material_export_dir=""):
         self.products = []
         self.roles_path = roles_path
+        # Materials offered by each material parameter ({param: (default,
+        # [ids])}), written to the Parameters sheet instead of "null".
+        self.material_values = dict(material_values or {})
+        self.material_export_dir = material_export_dir
         self._manual_roles = set()  # rows whose role was set by hand
         self._measured = {}  # (row, col) -> (displayed text, exact value)
         super().__init__(parent)
+
+    def _add_extra_buttons(self, sizer):
+        btn = wx.Button(self, label=" Material values...")
+        btn.SetBitmap(_icon(wx.ART_LIST_VIEW), wx.LEFT)
+        btn.Bind(wx.EVT_BUTTON, lambda e: self.choose_material_values())
+        sizer.Add(btn, 0, wx.RIGHT, 6)
+
+    def choose_material_values(self):
+        if not self.products:
+            wx.MessageBox("Scan the 3D files first.", "Warning", wx.OK | wx.ICON_WARNING, self)
+            return
+        self._commit_edit()
+        self._collect()
+        param_ids = list(dict.fromkeys(name for p in self.products for name in p.publications))
+        result = _choose_material_values(self, param_ids, self.material_values, self.material_export_dir)
+        if result is None:
+            return
+        self.material_values, self.material_export_dir = result
+        self.log_line(f"Material values: {material_values.describe(self.material_values)}", "load")
 
     @staticmethod
     def _default_out_dir(src_dir):
@@ -1413,7 +1640,9 @@ class Bm3BuilderDialog(_BuilderDialog):
             return
 
         try:
-            out_xlsx = bm3_builder.write_bm3_export(self.products, out_dir, log=lambda m: self.log_line(m, "load"))
+            out_xlsx = bm3_builder.write_bm3_export(
+                self.products, out_dir, log=lambda m: self.log_line(m, "load"), material_values=self.material_values,
+            )
             # The role is not part of the bm3 Excel: it goes to the roles
             # file the main window reads when loading this export.
             excel_io.update_roles_file(

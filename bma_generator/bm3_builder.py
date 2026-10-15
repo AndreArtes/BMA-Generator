@@ -23,6 +23,7 @@ from pathlib import Path
 
 import openpyxl
 
+from . import material_values as mv
 from . import utilities_data
 from .bm3_reader import read_bm3_model
 
@@ -155,10 +156,12 @@ def _format_dimension(value):
     return repr(round(value, 10))
 
 
-def write_bm3_export(products, out_dir, log=None):
+def write_bm3_export(products, out_dir, log=None, material_values=None):
     """Copie les fichiers 3D/miniatures dans <out_dir>/<ID>/ et ecrit
     <out_dir>/export-products-bm3.xlsx. Retourne le chemin de l'Excel.
-    out_dir doit etre distinct du dossier source des fichiers 3D."""
+    out_dir doit etre distinct du dossier source des fichiers 3D.
+    `material_values` (voir material_values.py) donne Default/Values des
+    parametres materiau ; ceux qui n'y figurent pas restent a "null"."""
 
     out_dir = Path(out_dir)
     for product in products:
@@ -206,11 +209,12 @@ def write_bm3_export(products, out_dir, log=None):
                 value, f"< {value} <", "false", "", "Length", "", "", 1, None, "in", False, None,
             ])
         for name in product.publications:
-            # Valeur du materiau inconnue a ce stade : choisie dynamiquement
-            # par le configurateur.
+            # Sans materiaux choisis, valeur inconnue a ce stade : choisie
+            # dynamiquement par le configurateur.
+            default, values = mv.cells(material_values, name) or ("null", "null")
             ws_params.append([
                 None, pid, None, name, "Product", name, "Read & Write",
-                "null", "null", "false", "", "", "", "", None, None, "in", False, None,
+                default, values, mv.ALLOW_ANY_VALUE, "", "", "", "", None, None, "in", False, None,
             ])
 
     ws_utilities = wb.create_sheet("Utilities")
