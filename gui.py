@@ -16,7 +16,7 @@ from pathlib import Path
 import wx
 import wx.grid
 
-from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, material_values
+from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, material_values, top_product
 from bma_generator import templates as tpl
 
 ROLE_VALUES = [""] + tpl.ALL_ROLES
@@ -418,7 +418,9 @@ class MainFrame(wx.Frame):
         row1.AddSpacer(16)
         row1.Add(self._icon_button(parent, wx.ART_NEW, "Build bm3 from 3D files...", self.open_bm3_builder),
                  0, wx.RIGHT, 6)
-        row1.Add(self._icon_button(parent, wx.ART_NEW, "Build materials...", self.open_material_builder), 0)
+        row1.Add(self._icon_button(parent, wx.ART_NEW, "Build materials...", self.open_material_builder),
+                 0, wx.RIGHT, 6)
+        row1.Add(self._icon_button(parent, wx.ART_NEW, "Build top product...", self.open_top_product), 0)
 
         row2 = wx.BoxSizer(wx.HORIZONTAL)
         row2.Add(wx.StaticText(parent, label="ID prefix:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
@@ -881,16 +883,97 @@ class MainFrame(wx.Frame):
             self.material_export_dir = str(written_dir)
             self.log_line(f"Materials export written to {written_dir}", "generated")
 
+    def open_top_product(self):
+        """Opens the top product window on the current bma output folder.
+        Material values chosen there are kept for the next .BMA generation."""
+        dlg = TopProductDialog(self, self.out_dir, self.material_values, self.material_export_dir, self.brand_override)
+        dlg.ShowModal()
+        written = dlg.written_path
+        self.material_values, self.material_export_dir = dlg.material_values, dlg.material_export_dir
+        dlg.Destroy()
+        if written is not None:
+            self.log_line(f"Top product written: {written}", "generated")
+
+
+class _IdPicker(wx.Panel):
+    """Tickable list of IDs with "Select all / none" and a Default choice
+    among the ticked ones, plus a one-line preview of what will be written
+    (Default + Values joined with "+"). Shared by the material values and
+    top product windows. selection() -> (default_id, [ticked ids])."""
+
+    def __init__(self, parent, empty_text, list_height=240, on_change=None):
+        super().__init__(parent)
+        self._ids = []
+        self._empty_text = empty_text
+        self._on_change = on_change
+
+        self.list_ctrl = wx.CheckListBox(self, size=(-1, list_height))
+        self.list_ctrl.Bind(wx.EVT_CHECKLISTBOX, lambda e: self._refresh_default())
+
+        row = wx.BoxSizer(wx.HORIZONTAL)
+        for label, checked in (("Select all", True), ("Select none", False)):
+            btn = wx.Button(self, label=label)
+            btn.Bind(wx.EVT_BUTTON, lambda e, c=checked: self.check_all(c))
+            row.Add(btn, 0, wx.RIGHT, 6)
+        row.AddSpacer(16)
+        row.Add(wx.StaticText(self, label="Default:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        self.default_ctrl = wx.Choice(self, size=(220, -1))
+        self.default_ctrl.Bind(wx.EVT_CHOICE, lambda e: self._changed())
+        row.Add(self.default_ctrl, 0)
+
+        self.preview = wx.StaticText(self, label="")
+
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(self.list_ctrl, 1, wx.EXPAND)
+        box.Add(row, 0, wx.TOP | wx.BOTTOM, 6)
+        box.Add(self.preview, 0, wx.EXPAND)
+        self.SetSizer(box)
+
+    def set_items(self, items, checked=(), default=None):
+        """items: [(id, label)]; `checked` IDs missing from items are added
+        (labelled as such) so a previous choice is never silently dropped."""
+        known = {i for i, _label in items}
+        items = list(items) + [(i, f"{i}  -  (not in this export)") for i in checked if i not in known]
+        self._ids = [i for i, _label in items]
+        self.list_ctrl.Set([label for _i, label in items])
+        self.list_ctrl.SetCheckedItems([self._ids.index(i) for i in checked if i in self._ids])
+        self._refresh_default(default)
+
+    def check_all(self, checked):
+        self.list_ctrl.SetCheckedItems(list(range(self.list_ctrl.GetCount())) if checked else [])
+        self._refresh_default()
+
+    def selection(self):
+        ids = [self._ids[i] for i in self.list_ctrl.GetCheckedItems()]
+        default = self.default_ctrl.GetStringSelection()
+        return (default if default in ids else (ids[0] if ids else None)), ids
+
+    def _refresh_default(self, wanted=None):
+        ids = [self._ids[i] for i in self.list_ctrl.GetCheckedItems()]
+        wanted = wanted or self.default_ctrl.GetStringSelection()
+        self.default_ctrl.Set(ids)
+        if ids:
+            self.default_ctrl.SetSelection(ids.index(wanted) if wanted in ids else 0)
+        self._changed()
+
+    def _changed(self):
+        default, ids = self.selection()
+        self.preview.SetLabel(
+            f"Default: {default}    Values: {material_values.SEPARATOR.join(ids)}" if ids else self._empty_text
+        )
+        self.preview.Wrap(max(200, self.GetClientSize().width))
+        self.Layout()
+        if self._on_change:
+            self._on_change()
+
 
 class MaterialValuesDialog(wx.Dialog):
     """Chooses, for each material parameter of the products (Product-type
     parameters such as structureColor), which materials of a material export
     it offers (ticked = written to Values, joined with "+") and which one is
-    the Default. Used before writing a bm3 export and before generating the
-    .BMA files. Result: self.values = {param_id: (default_id, [ids])}, see
-    bma_generator.material_values."""
-
-    NOT_IN_EXPORT = "(not in this export)"
+    the Default. Used before writing a bm3 export, generating the .BMA files
+    and writing a top product. Result: self.values = {param_id: (default_id,
+    [ids])}, see bma_generator.material_values."""
 
     def __init__(self, parent, param_ids, values, export_path):
         super().__init__(parent, title="Material values",
@@ -917,28 +1000,14 @@ class MaterialValuesDialog(wx.Dialog):
         param_row.Add(wx.StaticText(self, label="Parameter:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         param_row.Add(self.param_ctrl, 0)
 
-        self.list_ctrl = wx.CheckListBox(self, size=(-1, 260))
-        self.list_ctrl.Bind(wx.EVT_CHECKLISTBOX, lambda e: self._refresh_default())
-
-        select_row = wx.BoxSizer(wx.HORIZONTAL)
-        for label, checked in (("Select all", True), ("Select none", False)):
-            btn = wx.Button(self, label=label)
-            btn.Bind(wx.EVT_BUTTON, lambda e, c=checked: self._check_all(c))
-            select_row.Add(btn, 0, wx.RIGHT, 6)
-        select_row.AddSpacer(16)
-        select_row.Add(wx.StaticText(self, label="Default:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-        self.default_ctrl = wx.Choice(self, size=(200, -1))
-        self.default_ctrl.Bind(wx.EVT_CHOICE, lambda e: self._update_preview())
-        select_row.Add(self.default_ctrl, 0)
-
-        self.preview = wx.StaticText(self, label="")
+        self.picker = _IdPicker(
+            self, "No material ticked: Default/Values stay \"null\" (free choice in the configurator).", 260,
+        )
 
         root = wx.BoxSizer(wx.VERTICAL)
         root.Add(path_row, 0, wx.EXPAND | wx.ALL, 8)
         root.Add(param_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
-        root.Add(self.list_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
-        root.Add(select_row, 0, wx.ALL, 8)
-        root.Add(self.preview, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        root.Add(self.picker, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
         root.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.EXPAND | wx.ALL, 8)
         self.SetSizer(root)
         self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
@@ -971,58 +1040,206 @@ class MaterialValuesDialog(wx.Dialog):
             if not quiet:
                 wx.MessageBox(f"Unable to read the materials export:\n{exc}", "Error", wx.OK | wx.ICON_ERROR, self)
         if self._param:
-            self._show_param(self._param, save=True)
+            self._show_param(self._param)
 
     def _save_param(self):
         if not self._param:
             return
-        ids = [self._item_ids[i] for i in self.list_ctrl.GetCheckedItems()]
-        default = self.default_ctrl.GetStringSelection()
+        default, ids = self.picker.selection()
         if ids:
-            self.values[self._param] = (default if default in ids else ids[0], ids)
+            self.values[self._param] = (default, ids)
         else:
             self.values.pop(self._param, None)
 
-    def _show_param(self, param, save=True):
-        if save:
-            self._save_param()
+    def _show_param(self, param):
+        self._save_param()
         self._param = param
         default, chosen = self.values.get(param, (None, []))
-        known = {m[0] for m in self._materials}
-        # Materials chosen earlier but absent from the loaded export stay
-        # listed (and ticked) so reopening the window never drops them.
-        items = list(self._materials) + [(i, self.NOT_IN_EXPORT, "") for i in chosen if i not in known]
-        self._item_ids = [i for i, _r, _n in items]
-        self.list_ctrl.Set([
-            f"{i}  -  {ref}" + (f"  ({name})" if name else "") if ref or name else i for i, ref, name in items
-        ])
-        self.list_ctrl.SetCheckedItems([self._item_ids.index(i) for i in chosen if i in self._item_ids])
-        self._refresh_default(default)
-
-    def _check_all(self, checked):
-        self.list_ctrl.SetCheckedItems(list(range(self.list_ctrl.GetCount())) if checked else [])
-        self._refresh_default()
-
-    def _refresh_default(self, wanted=None):
-        ids = [self._item_ids[i] for i in self.list_ctrl.GetCheckedItems()]
-        wanted = wanted or self.default_ctrl.GetStringSelection()
-        self.default_ctrl.Set(ids)
-        if ids:
-            self.default_ctrl.SetSelection(ids.index(wanted) if wanted in ids else 0)
-        self._update_preview()
-
-    def _update_preview(self):
-        ids = [self._item_ids[i] for i in self.list_ctrl.GetCheckedItems()]
-        self.preview.SetLabel(
-            f"Default: {self.default_ctrl.GetStringSelection()}    Values: {material_values.SEPARATOR.join(ids)}"
-            if ids else "No material ticked: Default/Values stay \"null\" (free choice in the configurator)."
+        self.picker.set_items(
+            [(i, f"{i}  -  {ref}" + (f"  ({name})" if name else "") if ref or name else i)
+             for i, ref, name in self._materials],
+            chosen, default,
         )
-        self.preview.Wrap(self.GetClientSize().width - 16)
-        self.Layout()
 
     def _on_ok(self, event):
         self._save_param()
         event.Skip()
+
+
+class TopProductDialog(wx.Dialog):
+    """Writes a top product Excel (bma_generator.top_product): the catalog
+    product grouping the .BMA assemblies of a range. Its mandatory "modules"
+    parameter offers the ticked assemblies of a bma export (Default = one of
+    them); the material parameters of those assemblies (e.g. structureColor)
+    are added with the materials chosen in "Material values..."."""
+
+    DEFAULT_OUT = str(Path("fichier top") / top_product.TOP_XLSX_NAME)
+
+    def __init__(self, parent, bma_dir, material_values_, material_export_dir, brand=""):
+        super().__init__(parent, title="Build top product",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.material_values = dict(material_values_ or {})
+        self.material_export_dir = material_export_dir
+        self.modules = []  # BmaModule of the loaded bma export
+        self.written_path = None
+
+        self.bma_ctrl = wx.TextCtrl(self, value=bma_dir or "")
+        btn_browse = wx.Button(self, label="Browse...")
+        btn_browse.Bind(wx.EVT_BUTTON, self._browse_bma)
+        btn_load = wx.Button(self, label="Load")
+        btn_load.Bind(wx.EVT_BUTTON, lambda e: self._load_bma())
+        bma_row = wx.BoxSizer(wx.HORIZONTAL)
+        bma_row.Add(wx.StaticText(self, label="bma export:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        bma_row.Add(self.bma_ctrl, 1, wx.RIGHT, 6)
+        bma_row.Add(btn_browse, 0, wx.RIGHT, 4)
+        bma_row.Add(btn_load, 0)
+
+        self.id_ctrl = wx.TextCtrl(self)
+        self.ref_ctrl = wx.TextCtrl(self)
+        self.type_ctrl = wx.ComboBox(self, choices=bm3_builder.PRODUCT_TYPES)
+        self.category_ctrl = wx.TextCtrl(self, value=top_product.CATEGORY_ID)
+        self.brand_ctrl = wx.TextCtrl(self, value=brand or "")
+        fields = wx.FlexGridSizer(cols=4, vgap=4, hgap=8)
+        fields.AddGrowableCol(1)
+        fields.AddGrowableCol(3)
+        for label, ctrl in (("Product ID:", self.id_ctrl), ("Reference:", self.ref_ctrl),
+                            ("Product Type:", self.type_ctrl), ("Category ID:", self.category_ctrl),
+                            ("Brand:", self.brand_ctrl)):
+            fields.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
+            fields.Add(ctrl, 1, wx.EXPAND)
+
+        modules_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Modules (.BMA assemblies offered by the top product)")
+        self.picker = _IdPicker(modules_box.GetStaticBox(), "Tick at least one module.", 200,
+                                on_change=self._refresh_materials_label)
+        modules_box.Add(self.picker, 1, wx.EXPAND | wx.ALL, 4)
+
+        materials_row = wx.BoxSizer(wx.HORIZONTAL)
+        btn_materials = wx.Button(self, label=" Material values...")
+        btn_materials.SetBitmap(_icon(wx.ART_LIST_VIEW), wx.LEFT)
+        btn_materials.Bind(wx.EVT_BUTTON, lambda e: self.choose_material_values())
+        materials_row.Add(btn_materials, 0, wx.RIGHT, 8)
+        self.materials_label = wx.StaticText(self, label="")
+        materials_row.Add(self.materials_label, 1, wx.ALIGN_CENTER_VERTICAL)
+
+        self.out_ctrl = wx.TextCtrl(self, value=self.DEFAULT_OUT)
+        btn_out = wx.Button(self, label="Browse...")
+        btn_out.Bind(wx.EVT_BUTTON, self._browse_out)
+        out_row = wx.BoxSizer(wx.HORIZONTAL)
+        out_row.Add(wx.StaticText(self, label="Output Excel:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        out_row.Add(self.out_ctrl, 1, wx.RIGHT, 6)
+        out_row.Add(btn_out, 0)
+
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        btn_write = wx.Button(self, label=" Write top product")
+        btn_write.SetBitmap(_icon(wx.ART_FILE_SAVE), wx.LEFT)
+        btn_write.Bind(wx.EVT_BUTTON, lambda e: self.write())
+        btn_close = wx.Button(self, wx.ID_CLOSE, label="Close")
+        btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
+        buttons.Add(btn_write, 0)
+        buttons.AddStretchSpacer()
+        buttons.Add(btn_close, 0)
+
+        root = wx.BoxSizer(wx.VERTICAL)
+        root.Add(bma_row, 0, wx.EXPAND | wx.ALL, 8)
+        root.Add(fields, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        root.Add(modules_box, 1, wx.EXPAND | wx.ALL, 8)
+        root.Add(materials_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        root.Add(out_row, 0, wx.EXPAND | wx.ALL, 8)
+        root.Add(buttons, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(root)
+        self.SetSize((760, 640))
+        self.CentreOnParent()
+
+        if self.bma_ctrl.GetValue() and Path(self.bma_ctrl.GetValue()).exists():
+            self._load_bma(quiet=True)
+        self._refresh_materials_label()
+
+    def _browse_bma(self, _event):
+        dlg = wx.DirDialog(self, "Choose a bma export folder", defaultPath=_dialog_start_dir(self.bma_ctrl.GetValue()))
+        if dlg.ShowModal() == wx.ID_OK:
+            self.bma_ctrl.SetValue(dlg.GetPath())
+            self._load_bma()
+        dlg.Destroy()
+
+    def _browse_out(self, _event):
+        current = Path(self.out_ctrl.GetValue() or self.DEFAULT_OUT)
+        dlg = wx.FileDialog(self, "Save the top product Excel", defaultDir=_dialog_start_dir(str(current.parent)),
+                            defaultFile=current.name, wildcard="Excel (*.xlsx)|*.xlsx",
+                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        if dlg.ShowModal() == wx.ID_OK:
+            self.out_ctrl.SetValue(dlg.GetPath())
+        dlg.Destroy()
+
+    def _load_bma(self, quiet=False):
+        try:
+            self.modules = top_product.read_bma_export(self.bma_ctrl.GetValue().strip())
+        except Exception as exc:
+            self.modules = []
+            if not quiet:
+                wx.MessageBox(f"Unable to read the bma export:\n{exc}", "Error", wx.OK | wx.ICON_ERROR, self)
+        default, ids = self.picker.selection()
+        self.picker.set_items(
+            [(m.assembly_id, f"{m.assembly_id}  -  {m.reference}" if m.reference else m.assembly_id)
+             for m in self.modules],
+            ids or [m.assembly_id for m in self.modules], default,
+        )
+        self._refresh_materials_label()
+
+    def _material_params(self):
+        """Material parameters of the ticked modules, in order."""
+        _default, ids = self.picker.selection()
+        ticked = set(ids)
+        return list(dict.fromkeys(
+            name for m in self.modules if m.assembly_id in ticked for name in m.material_params
+        ))
+
+    def _refresh_materials_label(self):
+        params = self._material_params()
+        if not params:
+            self.materials_label.SetLabel("The ticked modules have no material parameter.")
+            return
+        chosen = {p: v for p, v in self.material_values.items() if p in params}
+        unset = [p for p in params if p not in chosen]
+        self.materials_label.SetLabel(
+            material_values.describe(chosen) + (f"   (no materials: {', '.join(unset)} -> null)" if unset else "")
+        )
+
+    def choose_material_values(self):
+        result = _choose_material_values(self, self._material_params(), self.material_values, self.material_export_dir)
+        if result is not None:
+            self.material_values, self.material_export_dir = result
+        self._refresh_materials_label()
+
+    def write(self):
+        default, ids = self.picker.selection()
+        product_id = self.id_ctrl.GetValue().strip()
+        product_type = self.type_ctrl.GetValue().strip()
+        if product_type:
+            resolved = bm3_builder.resolve_product_type(product_type)
+            if resolved is None:
+                wx.MessageBox(f"Unknown or ambiguous Product Type: '{product_type}'.", "Error",
+                              wx.OK | wx.ICON_ERROR, self)
+                return
+            product_type = resolved
+            self.type_ctrl.SetValue(resolved)
+        missing = [n for n, v in (("Product ID", product_id), ("Modules", ids)) if not v]
+        if missing:
+            wx.MessageBox("Missing: " + ", ".join(missing), "Incomplete", wx.OK | wx.ICON_WARNING, self)
+            return
+        out = Path(self.out_ctrl.GetValue().strip() or self.DEFAULT_OUT)
+        if out.exists() and wx.MessageBox(f"{out} already exists. Overwrite it?", "Overwrite",
+                                          wx.YES_NO | wx.ICON_WARNING, self) != wx.YES:
+            return
+        try:
+            self.written_path = top_product.write_top_product(
+                out, product_id, self.ref_ctrl.GetValue().strip(), product_type, self.brand_ctrl.GetValue().strip(),
+                (default, ids), self._material_params(), self.material_values,
+                category=self.category_ctrl.GetValue().strip(),
+            )
+        except Exception as exc:
+            wx.MessageBox(f"Writing the top product failed:\n{exc}", "Error", wx.OK | wx.ICON_ERROR, self)
+            return
+        self.EndModal(wx.ID_OK)
 
 
 class ProductTypeEditor(wx.grid.GridCellEditor):

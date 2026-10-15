@@ -47,6 +47,12 @@ GUI, or `main.py build-bm3` / `main.py build-materials`):
 tick, for a material parameter such as `structureColor`, which materials
 of that export the customer can choose and which one is the default; they
 are written to the Parameters sheet as `Default` = one ID and `Values` =
-the IDs joined with `+` (e.g. `b9lSah_1+b9lSah_2+b9lSah_3`).
+the IDs joined with `+` (e.g. `b9lSah_1+b9lSah_2+b9lSah_3`), and the
+default material is set on that parameter in the `.BMA` files.
+
+**Build top product...** writes the catalog product that groups a range's
+`.BMA` assemblies: an Excel with a mandatory `modules` parameter (the
+ticked assemblies, joined with `+`, one of them as default) plus the
+material parameters (e.g. `structureColor`). CLI: `main.py build-top`.
 
 See `CLAUDE.md` for architecture details.

@@ -31,6 +31,11 @@ Command-line usage:
            from a flat folder of .BM3MAT files. Reference and Name are left
            empty (fill them in the GUI or the Excel).
 
+    python main.py build-top --bma-dir "fichier bma" --product-id MyRange_top --out "fichier top/top_Product.xlsx"
+        -> writes a top product Excel: its "modules" parameter offers the
+           .BMA assemblies of --bma-dir (all, or --modules ID+ID+..., first
+           = Default), plus their material parameters (--material-values).
+
 Valid roles: see bma_generator.templates.ALL_ROLES. The roles file also has
 an "Anchors" sheet where anchor tags, compatibilities (receive tags) and the
 135-degree corner angle can be edited; generation uses it.
@@ -40,7 +45,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, material_values, templates as tpl
+from bma_generator import bm3_builder, bm3mat_builder, excel_io, generator, material_values, templates as tpl, top_product
 
 
 MATERIAL_VALUES_HELP = (
@@ -136,6 +141,25 @@ def cmd_build_materials(args):
     print(f"Materials Excel written: {out_xlsx} ({len(materials)} material(s); fill in Reference and Name).")
 
 
+def cmd_build_top(args):
+    modules = top_product.read_bma_export(args.bma_dir)
+    if args.modules:
+        ids = [m.strip() for m in args.modules.split(material_values.SEPARATOR) if m.strip()]
+    else:
+        ids = [m.assembly_id for m in modules]
+    params = list(dict.fromkeys(p for m in modules if m.assembly_id in ids for p in m.material_params))
+    product_type = ""
+    if args.product_type:
+        product_type = bm3_builder.resolve_product_type(args.product_type)
+        if product_type is None:
+            raise ValueError(f"Unknown or ambiguous Product Type: {args.product_type!r}")
+    out = top_product.write_top_product(
+        args.out, args.product_id, args.reference or "", product_type, args.brand or "",
+        (ids[0] if ids else None, ids), params, material_values.parse(args.material_values),
+    )
+    print(f"Top product written: {out} ({len(ids)} module(s); material parameters: {', '.join(params) or '-'}).")
+
+
 def run_interactive():
     print("=== BMA Generator ===")
     bm3_dir = input("bm3 folder [fichier bm3]: ").strip() or "fichier bm3"
@@ -184,6 +208,18 @@ def main():
                        help=f"Product Type for every material (default: '{bm3mat_builder.DEFAULT_PRODUCT_TYPE}').")
     p_mat.add_argument("--brand", default=None, help="Brand for every material.")
     p_mat.set_defaults(func=cmd_build_materials)
+
+    p_top = sub.add_parser("build-top", help="Writes a top product Excel grouping the .BMA assemblies of a bma export.")
+    p_top.add_argument("--bma-dir", default="fichier bma")
+    p_top.add_argument("--product-id", required=True)
+    p_top.add_argument("--out", default=str(Path("fichier top") / top_product.TOP_XLSX_NAME))
+    p_top.add_argument("--reference", default=None)
+    p_top.add_argument("--product-type", default=None)
+    p_top.add_argument("--brand", default=None)
+    p_top.add_argument("--modules", default=None, metavar="ID+ID+...",
+                       help="Assemblies offered (default: all of --bma-dir); the first one is the Default.")
+    p_top.add_argument("--material-values", action="append", metavar="PARAM=ID+ID+...", help=MATERIAL_VALUES_HELP)
+    p_top.set_defaults(func=cmd_build_top)
 
     args = parser.parse_args()
     if not getattr(args, "command", None):

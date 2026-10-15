@@ -78,7 +78,11 @@ def _output_row(assembly_id, param_id, ptype, translation_key, editable, default
     ]
 
 
-def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None):
+def _product_reference(db_id):
+    return {"protocol": "product", "referenceValue": {"dbId": db_id}}
+
+
+def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None, material_values=None):
     """Construit le JSON .BMA pour ce produit/role.
 
     Seuls les parametres bm3 de type "Product" (references a un autre
@@ -95,6 +99,11 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None):
     profondeurModuleAttache de la chaise longue, un parametre technique
     propre a l'assemblage, pas un parametre du bm3 source).
 
+    Si des materiaux ont ete choisis pour un parametre materiau
+    (`material_values`, voir material_values.py), sa declaration recoit le
+    materiau par defaut comme valeur (meme forme que monModule) ; l'overload
+    sur MonModule/Package est inchange.
+
     Retourne (data, package_id, warnings) : warnings est toujours vide ici,
     conserve pour compatibilite avec les appelants existants.
     """
@@ -108,10 +117,7 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None):
         {
             "type": "component",
             "name": "monModule",
-            "value": {
-                "protocol": "product",
-                "referenceValue": {"dbId": product.product_id},
-            },
+            "value": _product_reference(product.product_id),
         },
     ]
     module_overloads = []
@@ -121,7 +127,11 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None):
         if param.get("type") != PRODUCT_PARAM_TYPE:
             continue
         pid = param["id"]
-        parameters.append({"type": "component", "name": pid})
+        declaration = {"type": "component", "name": pid}
+        chosen = mv.cells(material_values, pid)
+        if chosen:
+            declaration["value"] = _product_reference(chosen[0])
+        parameters.append(declaration)
         module_overloads.append({"parameter": pid, "type": "component", "value": pid})
         package_overloads.append({"parameter": pid, "type": "component", "value": pid})
 
@@ -132,10 +142,7 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None):
         {
             "type": "component",
             "name": "package",
-            "value": {
-                "protocol": "product",
-                "referenceValue": {"dbId": package_id},
-            },
+            "value": _product_reference(package_id),
         }
     )
 
@@ -317,7 +324,9 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
                 )
             )
 
-        data, package_id, param_warnings = build_bma_json(product, role, extra_parameters, anchor_overrides)
+        data, package_id, param_warnings = build_bma_json(
+            product, role, extra_parameters, anchor_overrides, material_values
+        )
         warnings.extend(param_warnings)
 
         product_dir = out_dir / assembly_id
