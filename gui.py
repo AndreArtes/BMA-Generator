@@ -37,11 +37,11 @@ LOG_COLOURS = {
 
 
 def _find_bm3_xlsx(bm3_dir):
-    bm3_dir = Path(bm3_dir)
-    candidates = [p for p in bm3_dir.glob("*.xlsx") if not p.name.startswith("~$")]
-    if not candidates:
-        raise FileNotFoundError(f"No .xlsx file found in {bm3_dir}")
-    return candidates[0]
+    """Root Excel of a bm3 export, or of an already generated bma export."""
+    xlsx = bm3_builder.find_export_xlsx(bm3_dir)
+    if xlsx is None:
+        raise FileNotFoundError(f"No export Excel (.xlsx with a Products sheet) found in {bm3_dir}")
+    return xlsx
 
 
 def _dialog_start_dir(value):
@@ -591,6 +591,21 @@ class MainFrame(wx.Frame):
             except Exception:
                 saved_roles = {}
 
+        is_bma = generator.is_bma_export(self.products)
+        if is_bma:
+            # Already generated bma export: back to the bm3 product IDs, with
+            # the roles of the .BMA files (what was actually generated) and
+            # the materials of its Parameters sheet.
+            try:
+                overrides = excel_io.read_anchor_overrides(self.roles_path) if roles_file.exists() else None
+            except Exception:
+                overrides = None
+            bma_roles, bma_values, bma_warnings = generator.from_bma_export(self.products, self.bm3_dir, overrides)
+            saved_roles = {**saved_roles, **bma_roles}
+            self.material_values = bma_values
+            for warning in bma_warnings:
+                self.log_line(f"WARNING: {warning}", "warning")
+
         # Same columns as the output Excel (Product ID/Reference/Product
         # Type/Brand always present, even if Brand is missing from the bm3
         # source, plus the bm3's extra columns).
@@ -611,7 +626,7 @@ class MainFrame(wx.Frame):
             self.grid.SetCellValue(row, REF_DEPTH_COL, "" if ref_depth is None else str(ref_depth))
             for i, name in enumerate(self.dynamic_headers):
                 if name == "Product ID":
-                    value = p.product_id
+                    value = p.assembly_id or p.product_id
                 elif name == "Brand":
                     value = p.brand
                 else:
@@ -619,6 +634,12 @@ class MainFrame(wx.Frame):
                 self.grid.SetCellValue(row, FROZEN_COLS + i, "" if value is None else str(value))
 
         self.log_line(f"{len(self.products)} product(s) loaded from {bm3_xlsx}", "load")
+        if is_bma:
+            self.log_line(
+                "Already generated bma export: roles read from its .BMA files, material values from its Excel "
+                f"({material_values.describe(self.material_values)}). 'Generate .BMA' re-generates it "
+                "into the output folder.", "load",
+            )
         missing = [
             p.product_id for p in self.products
             if not ((saved_roles.get(p.product_id) or {}).get("role") or p.inferred_role)
@@ -1795,7 +1816,12 @@ class Bm3BuilderDialog(_BuilderDialog):
     def scan(self):
         warnings = []
         try:
-            self.products = bm3_builder.scan_3d_folder(self.src_ctrl.GetValue(), log=warnings.append)
+            src = self.src_ctrl.GetValue()
+            self.products = bm3_builder.scan_3d_folder(src, log=warnings.append)
+            # Already-built bm3 export: values typed earlier come back from
+            # its root Excel, roles from the roles file.
+            export_xlsx, export_values = bm3_builder.load_existing_export(src, self.products, log=warnings.append)
+            saved_roles = excel_io.read_roles(self.roles_path) if Path(self.roles_path).is_file() else {}
         except Exception as exc:
             self._error(f"Unable to read the 3D files:\n{exc}")
             return
@@ -1804,8 +1830,18 @@ class Bm3BuilderDialog(_BuilderDialog):
         self._measured.clear()
         self._reset_rows(len(self.products))
         for row, p in enumerate(self.products):
+            inferred = tpl.infer_role_from_reference(p.reference) or ""
+            role = (saved_roles.get(p.product_id) or {}).get("role") or inferred
+            if role not in tpl.ALL_ROLES:
+                role = inferred
+            if role != inferred:
+                self._manual_roles.add(row)
             values = {
                 "Product ID": p.product_id,
+                "Reference": p.reference,
+                self.ROLE: role,
+                "Product Type": p.product_type,
+                "Brand": p.brand,
                 "Category ID": p.category,
                 "Materials": ", ".join(p.publications),
                 "3D files": ", ".join(lod for lod in bm3_builder.LODS if lod in p.files),
@@ -1819,6 +1855,14 @@ class Bm3BuilderDialog(_BuilderDialog):
                 self.grid.SetCellValue(row, self.COL[name], value)
 
         self.log_line(f"{len(self.products)} product(s) read from {self.src_ctrl.GetValue()}.", "load")
+        if export_xlsx is not None:
+            # Re-editing an existing export: write it back in place by default.
+            self.out_ctrl.SetValue(self.src_ctrl.GetValue())
+            self.log_line(f"Existing bm3 export: values reloaded from {export_xlsx.name}; "
+                          "Write updates it in place (or choose another output folder).", "load")
+            if export_values:
+                self.material_values = export_values
+                self.log_line(f"Material values: {material_values.describe(export_values)}", "load")
         for warning in warnings:
             self.log_line(f"WARNING: {warning}", "warning")
 

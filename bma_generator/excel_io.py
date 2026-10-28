@@ -55,6 +55,9 @@ class Bm3Product:
         # copie ; mis a jour vers product_id une fois la copie physique faite
         # (voir copy_bm3_asset_folders).
         self.asset_id = product_id
+        # ID de l'assemblage (<ID>_ass) quand le produit a ete relu depuis un
+        # export bma deja genere (voir generator.from_bma_export), sinon None.
+        self.assembly_id = None
         self.reference = reference
         self.product_type = product_type
         self.brand = brand

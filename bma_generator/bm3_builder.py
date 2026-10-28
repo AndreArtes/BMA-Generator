@@ -5,6 +5,8 @@ Dossier source attendu (un ou plusieurs fichiers par produit) :
     <ID>.BM3                      -> modele HQ du produit <ID>
     <ID>_HQ.BM3 / _MQ / _LQ       -> niveaux de detail explicites (optionnels)
     <ID>.jpg / .jpeg / .png       -> miniature du produit (optionnelle)
+ou un export bm3 deja construit (meme structure que la sortie ci-dessous),
+dont l'Excel est relu pour re-editer les valeurs deja saisies.
 
 Sortie (meme structure que "fichier bm3") :
     <out_dir>/export-products-bm3.xlsx   (Products, Assets, Parameters, Utilities)
@@ -26,6 +28,7 @@ import openpyxl
 from . import material_values as mv
 from . import utilities_data
 from .bm3_reader import read_bm3_model
+from .excel_io import read_bm3_products
 
 PRODUCT_TYPES = utilities_data.PRODUCT_TYPES
 
@@ -78,10 +81,100 @@ class SourceProduct:
         return next((lod for lod in LODS if lod in self.files), None)
 
 
+def _add_file(products, product_id, lod, path, log):
+    product = products.setdefault(product_id, SourceProduct(product_id))
+    if lod in product.files and log:
+        log(f"{product_id}: several {lod} files, keeping {product.files[lod].name} (ignored: {path.name}).")
+    product.files.setdefault(lod, path)
+
+
+def _scan_export_subfolders(src_dir, products, log):
+    """Export bm3 deja construit : un sous-dossier <ID>/ par produit,
+    contenant HQ-Lod_0_std.BM3 (+ MQ/LQ) et thumbnail-512.jpg (noms ecrits
+    par write_bm3_export ; un autre .BM3 seul compte comme HQ)."""
+    lod_by_name = {name.lower(): lod for lod, name in LOD_FILE_NAMES.items()}
+    for folder in sorted(p for p in src_dir.iterdir() if p.is_dir()):
+        files = sorted(p for p in folder.iterdir() if p.is_file())
+        models = [p for p in files if p.suffix.lower() == ".bm3"]
+        if not models:
+            continue
+        for path in models:
+            lod = lod_by_name.get(path.name.lower())
+            if lod is None:
+                match = _LOD_SUFFIX.match(path.stem)
+                lod = match["lod"].upper() if match else "HQ"
+            _add_file(products, folder.name, lod, path, log)
+        thumbnail = next((p for p in files if p.suffix.lower() in IMAGE_SUFFIXES
+                          and p.stem.lower() in (THUMBNAIL_STEM, folder.name.lower())), None)
+        if thumbnail and not products[folder.name].thumbnail:
+            products[folder.name].thumbnail = thumbnail
+
+
+def find_export_xlsx(folder):
+    """Excel d'un export deja construit, a la racine de `folder` : celui au
+    nom standard s'il existe, sinon le premier .xlsx ayant une feuille
+    Products. None s'il n'y en a pas."""
+    folder = Path(folder)
+    standard = folder / BM3_XLSX_NAME
+    if standard.is_file():
+        return standard
+    for path in sorted(folder.glob("*.xlsx")):
+        if path.name.startswith("~$"):
+            continue
+        try:
+            wb = openpyxl.load_workbook(path, read_only=True)
+            has_products = "Products" in wb.sheetnames
+            wb.close()
+        except Exception:
+            continue
+        if has_products:
+            return path
+    return None
+
+
+def _apply_export_values(products, xlsx, log):
+    """Reprend dans les SourceProduct les valeurs deja saisies dans l'Excel
+    d'un export bm3 existant (Reference, Product Type, Brand, Category ID,
+    dimensions, parametres materiau et leurs materiaux choisis), pour
+    pouvoir les re-editer sans tout ressaisir. Retourne les valeurs
+    materiau trouvees ({param: (default, [ids])}, voir material_values)."""
+    found_values = {}
+    known = read_bm3_products(xlsx)
+    for row in known:
+        product = products.get(row.product_id)
+        if product is None:
+            if log:
+                log(f"{row.product_id}: listed in {xlsx.name} but no .BM3 file found, skipped.")
+            continue
+        product.reference = row.reference or ""
+        product.product_type = row.product_type or ""
+        product.brand = row.brand or ""
+        product.category = row.source_columns.get("Category ID") or product.category
+        for name in DIMENSIONS:
+            if getattr(row, name) is not None:
+                setattr(product, name, getattr(row, name))
+        materials = [p for p in row.parameters if p.get("type") == "Product"]
+        if materials:
+            product.publications = [p["id"] for p in materials]
+        for p in materials:
+            values = str(p.get("values") or "")
+            if values and values != "null" and p["id"] not in found_values:
+                ids = [i.strip() for i in values.split(mv.SEPARATOR) if i.strip()]
+                default = str(p.get("default") or "")
+                found_values[p["id"]] = (default if default in ids else ids[0], ids)
+    missing = sorted(set(products) - {row.product_id for row in known})
+    if missing and log:
+        log(f"Not in {xlsx.name} (values to fill in): {', '.join(missing)}")
+    return found_values
+
+
 def scan_3d_folder(src_dir, log=None):
-    """Liste les .BM3 du dossier (non recursif), les regroupe par Product ID
-    et lit leurs dimensions. Retourne une liste de SourceProduct triee par
-    ID. `log`, si fourni, recoit les avertissements (texte)."""
+    """Liste les .BM3 du dossier, les regroupe par Product ID et lit leurs
+    dimensions. Accepte un dossier "plat" (fichiers a la racine) comme un
+    export bm3 deja construit (un sous-dossier <ID>/ par produit ; voir
+    load_existing_export pour reprendre les valeurs de son Excel).
+    Retourne une liste de SourceProduct triee par ID. `log`, si fourni,
+    recoit les avertissements (texte)."""
 
     src_dir = Path(src_dir)
     if not src_dir.is_dir():
@@ -100,10 +193,8 @@ def scan_3d_folder(src_dir, log=None):
             continue
         match = _LOD_SUFFIX.match(path.stem)
         product_id, lod = (match["id"], match["lod"].upper()) if match else (path.stem, "HQ")
-        product = products.setdefault(product_id, SourceProduct(product_id))
-        if lod in product.files and log:
-            log(f"{product_id}: several {lod} files, keeping {product.files[lod].name} (ignored: {path.name}).")
-        product.files.setdefault(lod, path)
+        _add_file(products, product_id, lod, path, log)
+    _scan_export_subfolders(src_dir, products, log)
 
     unused_images = []
     for image in images:
@@ -133,6 +224,17 @@ def scan_3d_folder(src_dir, log=None):
     return [products[pid] for pid in sorted(products)]
 
 
+def load_existing_export(src_dir, products, log=None):
+    """Si `src_dir` est un export bm3 deja construit (Excel a la racine),
+    reprend ses valeurs dans `products` (resultat de scan_3d_folder).
+    Retourne (chemin de l'Excel ou None, materiaux choisis {param:
+    (default, [ids])})."""
+    xlsx = find_export_xlsx(src_dir)
+    if xlsx is None:
+        return None, {}
+    return xlsx, _apply_export_values({p.product_id: p for p in products}, xlsx, log)
+
+
 def search_product_types(text):
     """Product Types dont le libelle contient `text` (sans tenir compte de
     la casse), dans l'ordre de la liste. Texte vide -> liste complete."""
@@ -154,6 +256,12 @@ def _format_dimension(value):
     """Meme ecriture que les exports bm3 de reference : texte, 10 decimales
     au plus (ex. '1000.0001192093')."""
     return repr(round(value, 10))
+
+
+def _copy(src, dst):
+    """shutil.copy2, sauf si src est deja dst (export re-ecrit en place)."""
+    if Path(src).resolve() != Path(dst).resolve():
+        shutil.copy2(src, dst)
 
 
 def write_bm3_export(products, out_dir, log=None, material_values=None):
@@ -187,12 +295,12 @@ def write_bm3_export(products, out_dir, log=None, material_values=None):
 
         assets = {}
         for lod, src in product.files.items():
-            shutil.copy2(src, product_dir / LOD_FILE_NAMES[lod])
+            _copy(src, product_dir / LOD_FILE_NAMES[lod])
             assets[lod] = f"{pid}/{LOD_FILE_NAMES[lod]}"
         thumbnail = ""
         if product.thumbnail:
             name = THUMBNAIL_STEM + product.thumbnail.suffix.lower()
-            shutil.copy2(product.thumbnail, product_dir / name)
+            _copy(product.thumbnail, product_dir / name)
             thumbnail = f"{pid}/{name}"
         if log:
             log(f"{pid}: {len(product.files)} 3D file(s){' + thumbnail' if thumbnail else ''} copied to {product_dir}")

@@ -167,6 +167,74 @@ def _normalize_role_info(value):
     return value, None
 
 
+_ADMIN_PARAMS = ("module", "package")  # "package" : exports anterieurs a v1.7.1
+
+
+def is_bma_export(products):
+    """Vrai si ces produits (excel_io.read_bm3_products) viennent d'un
+    export bma deja genere plutot que d'un bm3 : chaque assemblage y a une
+    ligne Parameters "module" (l'ID du produit bm3 qu'il contient)."""
+    return bool(products) and all(any(x["id"] == "module" for x in p.parameters) for p in products)
+
+
+def role_from_bma(bma, anchor_overrides=None):
+    """Role dont les ancres portent exactement les tags de ce .BMA (chaque
+    role a son propre jeu de tags), ou None. A tags identiques (ex.
+    lateral_left / chaise_longue_left, qui generent le meme .BMA), le
+    premier de tpl.ALL_ROLES l'emporte."""
+    tags = sorted(tuple(a.get("tags", [])) for a in bma.get("anchors", []))
+    for role in tpl.ALL_ROLES:
+        _relations, anchors = tpl.role_definition(role, anchor_overrides)
+        if sorted(tuple(a["tags"]) for a in anchors) == tags:
+            return role
+    return None
+
+
+def from_bma_export(products, bma_dir, anchor_overrides=None):
+    """Rend re-generables des produits lus depuis un export bma : l'ID
+    redevient celui du produit bm3 (ligne "module", a defaut l'ID sans
+    "_ass"), `assembly_id`/`asset_id` gardent le dossier <ID>_ass (affichage,
+    miniature), et les lignes administratives module/package sont retirees
+    des parametres. Le role et la profondeur de reference sont relus dans
+    <bma_dir>/<ID>_ass/HQ-root.BMA.
+
+    Retourne (roles {product_id: {"role", "ref_depth"}}, materiaux choisis
+    {param: (default, [ids])}, avertissements)."""
+    bma_dir = Path(bma_dir)
+    roles, values, warnings = {}, {}, []
+    for p in products:
+        folder = p.product_id
+        module = next(x for x in p.parameters if x["id"] == "module")
+        base = str(module.get("default") or "")
+        if not base or base == "null":
+            base = folder[:-len(ASSEMBLY_SUFFIX)] if folder.endswith(ASSEMBLY_SUFFIX) else folder
+        p.assembly_id = p.asset_id = folder
+        p.product_id = p.original_asset_id = base
+        p.parameters = [x for x in p.parameters if x["id"] not in _ADMIN_PARAMS]
+        for x in p.parameters:
+            text = str(x.get("values") or "")
+            if x.get("type") == PRODUCT_PARAM_TYPE and text and text != "null" and x["id"] not in values:
+                ids = [i.strip() for i in text.split(mv.SEPARATOR) if i.strip()]
+                default = str(x.get("default") or "")
+                values[x["id"]] = (default if default in ids else ids[0], ids)
+
+        path = bma_dir / folder / "HQ-root.BMA"
+        if not path.is_file():
+            warnings.append(f"{folder}: no HQ-root.BMA, role to choose by hand.")
+            continue
+        bma = json.loads(path.read_text(encoding="utf-8"))
+        role = role_from_bma(bma, anchor_overrides)
+        if role is None:
+            warnings.append(f"{folder}: anchors match no known role, role to choose by hand.")
+            continue
+        ref_depth = None
+        if role in tpl.REFERENCE_DEPTH_ROLES:
+            ref_depth = next((x.get("value") for x in bma.get("parameters", [])
+                              if x.get("name") == tpl.REFERENCE_DEPTH_PARAM_NAME), None)
+        roles[base] = {"role": role, "ref_depth": ref_depth}
+    return roles, values, warnings
+
+
 def find_reference_depth(product, role, roles_by_id, products_by_id, anchor_overrides=None):
     """Deduit la profondeur du/des module(s) voisin(s) auquel ce produit va
     se connecter (roles de tpl.REFERENCE_DEPTH_ROLES : le pouf lateral, qui
@@ -316,8 +384,10 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
             (product_dir / f"{lod}-root.BMA").write_text(content, encoding="utf-8")
 
         src_thumb = bm3_dir / product.asset_id / "thumbnail-512.jpg"
-        if src_thumb.exists():
-            shutil.copyfile(src_thumb, product_dir / "thumbnail-512.jpg")
+        dst_thumb = product_dir / "thumbnail-512.jpg"
+        # Same file when a bma export is re-generated in place.
+        if src_thumb.exists() and src_thumb.resolve() != dst_thumb.resolve():
+            shutil.copyfile(src_thumb, dst_thumb)
 
         # Un Brand saisi dans l'interface remplace explicitement celui du bm3
         # source (l'utilisateur veut pouvoir forcer la marque a l'export).
