@@ -146,7 +146,7 @@ def read_bm3_products(xlsx_path):
 
 ROLES_HEADER = [
     "Product ID", "Reference", "Product Type", "Role",
-    "Profondeur reference (mm, optionnel - chaise longue uniquement)",
+    "Profondeur reference (mm, optionnel - pouf lateral uniquement)",
     "Roles valides",
 ]
 
@@ -266,22 +266,18 @@ def read_roles_rows(xlsx_path):
 
 
 def update_roles_file(xlsx_path, rows):
-    """Ajoute/remplace dans le fichier de roles (cree s'il n'existe pas) les
-    lignes (product_id, reference, product_type, role), sans toucher aux
-    autres produits deja presents. La profondeur de reference deja saisie
-    pour un produit est conservee."""
+    """Reecrit le fichier de roles (cree s'il n'existe pas) avec les seuls
+    produits du lot en cours, lignes (product_id, reference, product_type,
+    role) : les produits d'un lot precedent n'y restent pas. La profondeur
+    de reference deja saisie pour un produit du lot est conservee, ainsi
+    que la feuille Anchors."""
 
-    existing = [list(row) for row in read_roles_rows(xlsx_path)]
-    by_id = {row[0]: row for row in existing}
-    for product_id, reference, product_type, role in rows:
-        if product_id in by_id:
-            by_id[product_id][1:4] = [reference, product_type, role]
-        else:
-            row = [product_id, reference, product_type, role, ""]
-            existing.append(row)
-            by_id[product_id] = row
-
-    write_roles_from_rows([tuple("" if v is None else v for v in row) for row in existing], xlsx_path)
+    ref_depths = {row[0]: row[4] for row in read_roles_rows(xlsx_path)}
+    write_roles_from_rows(
+        [(pid, reference, product_type, role, ref_depths.get(pid, ""))
+         for pid, reference, product_type, role in rows],
+        xlsx_path,
+    )
 
 
 def read_roles(xlsx_path):

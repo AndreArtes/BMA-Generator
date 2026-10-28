@@ -4,6 +4,7 @@ bm3 et de leur role d'ancrage."""
 import json
 import shutil
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import openpyxl
@@ -11,7 +12,6 @@ import openpyxl
 from . import material_values as mv
 from . import templates as tpl
 
-PACKAGE_SUFFIX = "_p"
 ASSEMBLY_SUFFIX = "_ass"
 
 PARAMETERS_HEADER = [
@@ -60,11 +60,11 @@ def _output_row(assembly_id, param_id, ptype, translation_key, editable, default
     a null et Allow any value a 'true' : ce sont des choix que le client fait
     dans le configurateur, resolus dynamiquement, jamais figes ici.
 
-    `dynamic=False` desactive cette regle : les lignes administratives
-    'module' et 'package' sont aussi de type 'Product' mais leur Default/
-    Values doivent rester l'ID reel (produit bm3 / package) de CET
-    assemblage precis - une reference fixe a l'export, pas un choix
-    client."""
+    `dynamic=False` desactive cette regle : la ligne administrative
+    'module' est aussi de type 'Product' mais son Default/Values doit
+    rester l'ID reel du produit bm3 de CET assemblage precis - une
+    reference fixe a l'export, pas un choix client (idem pour un parametre
+    materiau dont les materiaux ont ete choisis)."""
 
     if ptype == PRODUCT_PARAM_TYPE and dynamic:
         # Litteralement le mot "null" (pas une cellule vide) : ces valeurs
@@ -88,29 +88,29 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None, 
     Seuls les parametres bm3 de type "Product" (references a un autre
     produit/materiau - la couleur, quel que soit son nom, structureColor/
     sofaColor/...) sont redeclares dans "parameters" (exposes sans valeur,
-    overridables) et overloades sur MonModule ET Package (meme logique que
-    dans les fichiers de reference valides). Les dimensions numeriques du
+    overridables) et overloades sur MonModule. (Il n'y a plus de parametre
+    ni de composant "package" : retires a la demande de l'utilisateur,
+    v1.7.1.) Les dimensions numeriques du
     bm3 (depth/width/height...) ne sont PAS redeclarees ici : un exemple
     .bma valide (role central) n'en a aucune - les relations y accedent
     directement via componentDependencies (MonModule.width, etc.), sans
     passer par un parametre expose au niveau de l'assemblage.
 
     `extra_parameters`, lui, reste gere normalement (ex: le
-    profondeurModuleAttache de la chaise longue, un parametre technique
+    profondeurModuleAttache du pouf lateral, un parametre technique
     propre a l'assemblage, pas un parametre du bm3 source).
 
     Si des materiaux ont ete choisis pour un parametre materiau
     (`material_values`, voir material_values.py), sa declaration recoit le
     materiau par defaut comme valeur (meme forme que monModule) ; l'overload
-    sur MonModule/Package est inchange.
+    sur MonModule est inchange.
 
-    Retourne (data, package_id, warnings) : warnings est toujours vide ici,
-    conserve pour compatibilite avec les appelants existants.
+    Retourne (data, warnings) : warnings est toujours vide ici, conserve
+    pour compatibilite avec les appelants existants.
     """
     relations, anchors = tpl.role_definition(role, anchor_overrides)
     anchors = [{"uuid": new_uuid(), **a} for a in anchors]
 
-    package_id = f"{product.product_id}{PACKAGE_SUFFIX}"
     warnings = []
 
     parameters = [
@@ -121,7 +121,6 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None, 
         },
     ]
     module_overloads = []
-    package_overloads = []
 
     for param in product.parameters:
         if param.get("type") != PRODUCT_PARAM_TYPE:
@@ -133,18 +132,9 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None, 
             declaration["value"] = _product_reference(chosen[0])
         parameters.append(declaration)
         module_overloads.append({"parameter": pid, "type": "component", "value": pid})
-        package_overloads.append({"parameter": pid, "type": "component", "value": pid})
 
     if extra_parameters:
         parameters.extend(extra_parameters)
-
-    parameters.append(
-        {
-            "type": "component",
-            "name": "package",
-            "value": _product_reference(package_id),
-        }
-    )
 
     data = {
         "version": 7,
@@ -163,20 +153,10 @@ def build_bma_json(product, role, extra_parameters=None, anchor_overrides=None, 
                 "positioningMode": 0,
                 "rotationAngle": 0,
             },
-            {
-                "name": "Package",
-                "position": {"x": 0, "y": 0, "z": 0},
-                "directionY": {"x": 0, "y": 1, "z": 0},
-                "directionZ": {"x": 0, "y": 0, "z": 1},
-                "overloads": package_overloads,
-                "reference": "package",
-                "positioningMode": 0,
-                "rotationAngle": 0,
-            },
         ],
         "anchors": anchors,
     }
-    return data, package_id, warnings
+    return data, warnings
 
 
 def _normalize_role_info(value):
@@ -189,9 +169,11 @@ def _normalize_role_info(value):
 
 def find_reference_depth(product, role, roles_by_id, products_by_id, anchor_overrides=None):
     """Deduit la profondeur du/des module(s) voisin(s) auquel ce produit va
-    se connecter (n'importe quel role dans tpl.LATERAL_ALIGN_ROLES, pas
-    seulement chaise longue), en cherchant parmi les autres produits du lot
-    ceux dont le role expose un tag que ce produit peut recevoir."""
+    se connecter (roles de tpl.REFERENCE_DEPTH_ROLES : le pouf lateral, qui
+    s'aligne sur l'avant de son voisin), en cherchant parmi les autres
+    produits du lot ceux dont le role expose un tag que ce produit peut
+    recevoir. Si leurs profondeurs different, la plus frequente l'emporte
+    (a egalite, celle du premier du lot) et un avertissement est emis."""
 
     wanted_tags = tpl.receive_tags(role, anchor_overrides)
     depths = []
@@ -212,14 +194,17 @@ def find_reference_depth(product, role, roles_by_id, products_by_id, anchor_over
     if not depths:
         return None, []
 
-    rounded = {round(d, 1) for d in depths}
+    counts = Counter(round(d, 1) for d in depths)
+    best = max(counts.values())
+    chosen = next(d for d in depths if counts[round(d, 1)] == best)
     warnings = []
-    if len(rounded) > 1:
+    if len(counts) > 1:
         warnings.append(
-            f"{product.product_id}: inconsistent depths among compatible neighbouring "
-            f"modules ({sorted(rounded)}), using {depths[0]} to align backs."
+            f"{product.product_id}: compatible neighbouring modules have different depths "
+            f"({sorted(counts)}), using the most common one ({round(chosen, 1)}) to align fronts; "
+            "set another one in the roles file if needed."
         )
-    return depths[0], warnings
+    return chosen, warnings
 
 
 def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_overrides=None,
@@ -271,7 +256,7 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
         extra_output_rows = []
         assembly_id = f"{product.product_id}{ASSEMBLY_SUFFIX}"
 
-        if role in tpl.LATERAL_ALIGN_ROLES:
+        if role in tpl.REFERENCE_DEPTH_ROLES:
             ref_depth = ref_depth_overrides.get(product.product_id)
             if ref_depth is None:
                 ref_depth, dep_warnings = find_reference_depth(
@@ -280,19 +265,13 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
                 warnings.extend(dep_warnings)
             if ref_depth is None:
                 # Pas de voisin compatible dans ce lot : repli sur la propre
-                # profondeur du produit (decalage nul, identique a l'ancien
-                # comportement y=0). Pour la famille chaise longue -
-                # presque toujours concernee par un vrai ecart de profondeur
-                # - ca vaut la peine de le signaler ; pour les autres roles
-                # (souvent generes sans tous leurs voisins presents dans le
-                # lot), ce repli est le cas normal et ne merite pas un
-                # avertissement a chaque fois.
-                if role in tpl.CHAISE_LONGUE_ROLES:
-                    warnings.append(
-                        f"{product.product_id} (chaise longue): no compatible module found in the batch "
-                        "to deduce the reference depth; set it manually in the roles file. "
-                        "Value used by default: the product's own depth (no offset)."
-                    )
+                # profondeur du produit (ancre sur son bord arriere, dos
+                # aligne comme les autres modules au lieu de l'avant).
+                warnings.append(
+                    f"{product.product_id} ({role}): no compatible module found in the batch to deduce "
+                    "the depth of the module it attaches to; set it in the roles file "
+                    "(Reference depth column). Back-aligned meanwhile."
+                )
                 ref_depth = product.depth
             extra_parameters = [
                 {
@@ -324,7 +303,7 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
                 )
             )
 
-        data, package_id, param_warnings = build_bma_json(
+        data, param_warnings = build_bma_json(
             product, role, extra_parameters, anchor_overrides, material_values
         )
         warnings.extend(param_warnings)
@@ -389,13 +368,6 @@ def generate(bm3_products, roles, bm3_dir, out_dir, brand_override=None, anchor_
                 )
             )
         rows_parameters.extend(extra_output_rows)
-        rows_parameters.append(
-            _output_row(
-                assembly_id, "package", PRODUCT_PARAM_TYPE, "package", "None",
-                package_id, package_id, "false", "", "", "", "",
-                None, None, "in", None, None, dynamic=False,
-            )
-        )
 
         generated.append(product.product_id)
 

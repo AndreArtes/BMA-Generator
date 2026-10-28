@@ -554,7 +554,7 @@ class MainFrame(wx.Frame):
         self.grid.AppendCols(n_cols)
 
         self.grid.SetColLabelValue(ROLE_COL, "Role (double-click)")
-        self.grid.SetColLabelValue(REF_DEPTH_COL, "Reference depth (chaise longue)")
+        self.grid.SetColLabelValue(REF_DEPTH_COL, "Reference depth (side pouf)")
         self.grid.SetColSize(ROLE_COL, 160)
         self.grid.SetColSize(REF_DEPTH_COL, 200)
 

@@ -53,22 +53,28 @@ ALL_ROLES = [
 
 # Familles "chaise longue" : profondeur typiquement non standard (plus
 # grande que les modules ordinaires). Utilise dans generator.py pour NE PAS
-# prendre leur profondeur comme reference pour aligner un AUTRE produit -
-# sinon une chaise longue pourrait se caler sur le dos d'une autre chaise
-# longue voisine au lieu d'un module standard.
+# prendre leur profondeur comme profondeur de reference d'un pouf lateral.
 CHAISE_LONGUE_ROLES = {CHAISE_LONGUE, CHAISE_LONGUE_LEFT, CHAISE_LONGUE_RIGHT}
 
-# Tout role dont au moins une ancre laterale (gauche/droite, pas les ancres
-# "avant"/frontales) doit aligner son dos sur celui du module voisin plutot
-# que de rester centree (y=0) : c'est necessaire des que deux modules
-# connectes n'ont pas la meme profondeur (cas le plus visible avec une
-# chaise longue, mais ca vaut pour n'importe quelle paire de profondeurs
-# differentes). Seuls les roles purement frontaux (POUF_FRONTAL,
-# TABLE_FRONTAL) n'ont pas d'ancre laterale et restent en dehors, ainsi que
-# les angles 135 (ancres inclinees a y=0, copiees telles quelles du .bma de
-# reference test_angle_135).
 CORNER_135_ROLES = {CORNER_LEFT_135, CORNER_RIGHT_135}
-LATERAL_ALIGN_ROLES = {r for r in ALL_ROLES if r not in (POUF_FRONTAL, TABLE_FRONTAL) and r not in CORNER_135_ROLES}
+
+# Alignement en profondeur des modules connectes lateralement (le dos est
+# du cote +Y, l'avant/l'assise du cote -Y, comme l'ancre "avant" -depth/2) :
+# chaque ancre laterale est posee sur le BORD ARRIERE du module (y =
+# +depth/2, voir _back_edge_relation). Deux modules connectes ont donc
+# toujours leurs dos alignes, quelles que soient leurs profondeurs, sans
+# avoir a connaitre celle du voisin. (L'ancienne approche - ancre au centre
+# decalee de la profondeur d'UN voisin du lot - decalait deux modules de
+# meme profondeur des que le lot melangeait les profondeurs, et doublait la
+# correction quand les deux modules connectes se decalaient.) Pour des
+# modules de meme profondeur, le placement est identique a l'ancien y=0.
+#
+# Seul le pouf lateral fait exception : il s'aligne sur l'AVANT (l'assise)
+# du module voisin, ce qui depend de la profondeur de ce voisin, injectee
+# comme parametre REFERENCE_DEPTH_PARAM_NAME (voir
+# generator.find_reference_depth, ou la colonne de profondeur de
+# reference du fichier de roles).
+REFERENCE_DEPTH_ROLES = {POUF_LATERAL}
 
 # Modules d'angle 135 : chaque ancre laterale est inclinee de
 # ANGLE_135_DEFAULT_DEGREES (valeur du .bma de reference test_angle_135),
@@ -81,10 +87,10 @@ ANGLE_135_DEFAULT_DEGREES = 15
 OFFSET_PARAM_NAME = "offSetModule"
 OFFSET_DEFAULT = 0
 
-# Nom du parametre numerique injecte dans les .BMA "chaise longue" pour
-# stocker la profondeur des modules standards auxquels elle se connecte
-# (voir generator.find_reference_depth : deduite via les receiveTags,
-# ou surchargee manuellement dans le fichier de roles).
+# Nom du parametre numerique injecte dans les .BMA des REFERENCE_DEPTH_ROLES
+# pour stocker la profondeur des modules auxquels ils se connectent (voir
+# generator.find_reference_depth : deduite via les receiveTags, ou
+# surchargee manuellement dans le fichier de roles).
 REFERENCE_DEPTH_PARAM_NAME = "profondeurModuleAttache"
 
 # Mots-cles reconnus n'importe ou dans la colonne "Reference" du bm3 (pas
@@ -95,6 +101,10 @@ REFERENCE_DEPTH_PARAM_NAME = "profondeurModuleAttache"
 _RIGHT_KEYWORDS = ("right", "droit")
 _LEFT_KEYWORDS = ("left", "gauche")
 _CORNER_KEYWORDS = ("corner", "angle", "coin")
+# "Module d'angle droit/gauche" : malgre le mot "angle", une piece
+# d'extremite avec un seul accoudoir (gamme VU), pas un angle en L -> role
+# lateral. Teste avant les mots-cles d'angle.
+_END_MODULE_KEYWORDS = ("moduledangle",)
 _CHAISE_LONGUE_KEYWORDS = ("chaiselong",)  # couvre chaiselong/chaiselongue/"chaise long(ue)" une fois nettoye
 _CENTRAL_KEYWORDS = ("central", "centre")
 _POUF_KEYWORDS = ("pouf",)
@@ -130,6 +140,8 @@ def infer_role_from_reference(reference):
     has_frontal = any(k in clean for k in _FRONTAL_KEYWORDS)
     has_lateral = any(k in clean for k in _LATERAL_KEYWORDS)
 
+    if any(k in clean for k in _END_MODULE_KEYWORDS) and (has_right or has_left):
+        return LATERAL_RIGHT if has_right else LATERAL_LEFT
     if has_corner and _ANGLE_135.search(reference):
         if has_right:
             return CORNER_RIGHT_135
@@ -203,30 +215,27 @@ def _rel_half_depth(name, expr_true):
     }
 
 
-def _lateral_align_relation():
-    """Relation Y partagee par toutes les ancres laterales (voir
-    LATERAL_ALIGN_ROLES) : decale l'ancre sur l'axe negatif de
-    -(profondeur du module voisin * 0.5 - propre profondeur * 0.5) au lieu
-    de la laisser au centre (y=0), pour que les DOS des deux modules
-    connectes s'alignent meme si leurs profondeurs different. Quand les
-    deux profondeurs sont egales, l'expression vaut 0 : comportement
-    strictement identique a l'ancien y=0 fixe dans ce cas."""
-    return {
-        "symbolDependencies": ["monModule", REFERENCE_DEPTH_PARAM_NAME],
-        "componentDependencies": [
-            {
-                "propertyName": "depth",
-                "componentName": "MonModule",
-                "component": "MonModule",
-            }
-        ],
-        "type": "number",
-        "name": "yPositionAncreLaterale",
-        "expression": (
-            "(monModule!== null) && (MonModule!== null) ? "
-            f"-({REFERENCE_DEPTH_PARAM_NAME}*0.5 - MonModule.depth*0.5):0"
-        ),
-    }
+def _back_edge_relation():
+    """Y des ancres laterales : le bord arriere du module (+depth/2), pour
+    que deux modules connectes aient leurs dos alignes quelles que soient
+    leurs profondeurs (voir REFERENCE_DEPTH_ROLES)."""
+    return _rel_half_depth(
+        "yPositionAncreLaterale",
+        "(monModule!== null) && (MonModule!== null) ? MonModule.depth/2:0",
+    )
+
+
+def _front_align_relation():
+    """Y des ancres du pouf lateral : placees pour que l'AVANT du pouf
+    s'aligne sur l'avant du module voisin, dont l'ancre est sur son bord
+    arriere (profondeurModuleAttache - depth/2 ; vaut +depth/2, le bord
+    arriere, quand les deux profondeurs sont egales)."""
+    relation = _rel_half_depth(
+        "yPositionAncreLaterale",
+        f"(monModule!== null) && (MonModule!== null) ? {REFERENCE_DEPTH_PARAM_NAME} - MonModule.depth/2:0",
+    )
+    relation["symbolDependencies"] = ["monModule", REFERENCE_DEPTH_PARAM_NAME]
+    return relation
 
 
 def _anchor(tags, receive_tags, position, direction_y=None, direction_z=None, activated=True):
@@ -265,7 +274,7 @@ def build_role_definition(role):
                 "yPositionAncreAvant",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.depth/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -296,7 +305,7 @@ def build_role_definition(role):
                 "xPositionAncreDroite",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -315,7 +324,7 @@ def build_role_definition(role):
                 "xPositionAncreGauche",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -327,16 +336,24 @@ def build_role_definition(role):
         return relations, anchors
 
     if role == CORNER_LEFT:
+        # L'ancre avant recoit un module tourne de 90 degres (dos vers -X) :
+        # elle est posee sur le cote dos de l'angle (x = -width/2) pour que
+        # l'ancre "bord arriere" du module tourne aligne son dos sur celui de
+        # l'angle.
         relations = [
             _rel_half_width(
                 "xPositionAncreDroit",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
+            _rel_half_width(
+                "xPositionAncreAvant",
+                "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
+            ),
             _rel_half_depth(
                 "yPositionAncreAvant",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.depth/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -347,23 +364,29 @@ def build_role_definition(role):
             _anchor(
                 ["AngleGaucheF"],
                 ["AngleDroitF", "CentralR", "GaucheTable"],
-                {"x": 0, "y": "yPositionAncreAvant", "z": 0},
+                {"x": "xPositionAncreAvant", "y": "yPositionAncreAvant", "z": 0},
                 direction_y={"x": -1, "y": 0, "z": 0},
             ),
         ]
         return relations, anchors
 
     if role == CORNER_RIGHT:
+        # Symetrique de CORNER_LEFT : module tourne dos vers +X, ancre avant
+        # sur le cote dos de l'angle (x = +width/2).
         relations = [
             _rel_half_width(
                 "xPositionAncreGauche",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
             ),
+            _rel_half_width(
+                "xPositionAncreAvant",
+                "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
+            ),
             _rel_half_depth(
                 "yPositionAncreAvant",
                 "(monModule!== null) && (MonModule!== null) ? -MonModule.depth/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -374,13 +397,14 @@ def build_role_definition(role):
             _anchor(
                 ["AngleDroitF"],
                 ["AngleGaucheF", "CentralL", "DroitTable"],
-                {"x": 0, "y": "yPositionAncreAvant", "z": 0},
+                {"x": "xPositionAncreAvant", "y": "yPositionAncreAvant", "z": 0},
                 direction_y={"x": 1, "y": 0, "z": 0},
             ),
         ]
         return relations, anchors
 
     if role == POUF_LATERAL:
+        # Aligne sur l'AVANT du module voisin (voir _front_align_relation).
         relations = [
             _rel_half_width(
                 "xPositionAncreGauche",
@@ -390,7 +414,7 @@ def build_role_definition(role):
                 "xPositionAncreDroit",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
-            _lateral_align_relation(),
+            _front_align_relation(),
         ]
         anchors = [
             _anchor(
@@ -437,7 +461,7 @@ def build_role_definition(role):
                 "xPositionAncreDroit",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -472,10 +496,9 @@ def build_role_definition(role):
 
     if role == CHAISE_LONGUE:
         # Comme "central" (2 ancres laterales symetriques gauche/droite).
-        # L'alignement des dos (voir _lateral_align_relation) est ce qui
-        # rend ce role necessaire en premier lieu : la chaise longue est
-        # typiquement plus profonde que les modules standards auxquels elle
-        # se connecte.
+        # La chaise longue est typiquement plus profonde que les modules
+        # standards auxquels elle se connecte : ses ancres sur le bord
+        # arriere (voir _back_edge_relation) alignent son dos sur le leur.
         relations = [
             _rel_half_width(
                 "xPositionAncreGauche",
@@ -485,7 +508,7 @@ def build_role_definition(role):
                 "xPositionAncreDroite",
                 "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
             ),
-            _lateral_align_relation(),
+            _back_edge_relation(),
         ]
         anchors = [
             _anchor(
@@ -510,7 +533,7 @@ def build_role_definition(role):
                     "xPositionAncreDroite",
                     "(monModule!== null) && (MonModule!== null) ? MonModule.width/2:0",
                 ),
-                _lateral_align_relation(),
+                _back_edge_relation(),
             ]
             anchors = [
                 _anchor(
@@ -525,7 +548,7 @@ def build_role_definition(role):
                     "xPositionAncreGauche",
                     "(monModule!== null) && (MonModule!== null) ? -MonModule.width/2:0",
                 ),
-                _lateral_align_relation(),
+                _back_edge_relation(),
             ]
             anchors = [
                 _anchor(
@@ -542,11 +565,11 @@ def build_role_definition(role):
     raise ValueError(f"Role inconnu: {role!r}. Roles valides: {ALL_ROLES}")
 
 
-def _rel_offset_width(name, expression):
+def _rel_135_position(name, symbols, properties, expression):
     return {
-        "symbolDependencies": ["monModule", OFFSET_PARAM_NAME],
+        "symbolDependencies": symbols,
         "componentDependencies": [
-            {"propertyName": "width", "componentName": "MonModule", "component": "MonModule"}
+            {"propertyName": prop, "componentName": "MonModule", "component": "MonModule"} for prop in properties
         ],
         "type": "number",
         "name": name,
@@ -566,35 +589,47 @@ def _corner_135_definition(role, degrees):
     configurateur). Angle gauche : angle negatif (ancres tournees vers les x
     negatifs, comme l'ancre avant de corner_left) ; angle droit : positif.
     Les noms de relations (dont la faute "xOrintation") sont ceux de la
-    reference."""
+    reference.
+
+    Ecart volontaire avec la reference (ancres a y=0) : les modules voisins
+    ont leur ancre laterale sur leur bord arriere (voir
+    REFERENCE_DEPTH_ROLES), donc chaque ancre est repoussee de depth/2 le
+    long de sa propre direction (sin, cos de l'angle). Avec un voisin de
+    meme profondeur, il se place exactement comme avant."""
 
     sign = -1 if role == CORNER_LEFT_135 else 1
     side = "Gauche" if role == CORNER_LEFT_135 else "Droit"
+    guard = "(monModule!== null) && (MonModule!== null)"
+    symbols = ["monModule", OFFSET_PARAM_NAME, "angleRad"]
     relations = [
-        _rel_offset_width(
-            "xPositionAncreGauche",
-            f"(monModule!== null) && (MonModule!== null) ? -(MonModule.width/2) +{OFFSET_PARAM_NAME}:0",
-        ),
-        _rel_offset_width(
-            "xPositionAncreDroit",
-            f"(monModule!== null) && (MonModule!== null) ? (MonModule.width/2)-{OFFSET_PARAM_NAME} :0",
-        ),
         _rel_constant("angleRad", ["Pi"], f"{_format_number(sign * degrees)}*Pi/180"),
         _rel_constant("yOrientation", ["angleRad"], "Math.cos(angleRad)"),
         _rel_constant("xOrintationRight", ["angleRad"], "Math.sin(angleRad)"),
         _rel_constant("xOrintationLeft", ["angleRad"], "-Math.sin(angleRad)"),
+        _rel_135_position(
+            "xPositionAncreGauche", symbols, ("width", "depth"),
+            f"{guard} ? -(MonModule.width/2) +{OFFSET_PARAM_NAME} - MonModule.depth/2*Math.sin(angleRad):0",
+        ),
+        _rel_135_position(
+            "xPositionAncreDroit", symbols, ("width", "depth"),
+            f"{guard} ? (MonModule.width/2)-{OFFSET_PARAM_NAME} + MonModule.depth/2*Math.sin(angleRad):0",
+        ),
+        _rel_135_position(
+            "yPositionAncre135", ["monModule", "angleRad"], ("depth",),
+            f"{guard} ? MonModule.depth/2*Math.cos(angleRad):0",
+        ),
     ]
     anchors = [
         _anchor(
             [f"Angle135{side}R"],
             ["CentralL", "AngleDroitL", "DroitTable", "PoufLatL", "TableBasseL", *_TAGS_135_L],
-            {"x": "xPositionAncreDroit", "y": 0, "z": 0},
+            {"x": "xPositionAncreDroit", "y": "yPositionAncre135", "z": 0},
             direction_y={"x": "xOrintationRight", "y": "yOrientation", "z": 0},
         ),
         _anchor(
             [f"Angle135{side}L"],
             ["CentralR", "AngleGaucheR", "GaucheTable", "PoufLatR", "TableBasseR", *_TAGS_135_R],
-            {"x": "xPositionAncreGauche", "y": 0, "z": 0},
+            {"x": "xPositionAncreGauche", "y": "yPositionAncre135", "z": 0},
             direction_y={"x": "xOrintationLeft", "y": "yOrientation", "z": 0},
         ),
     ]
